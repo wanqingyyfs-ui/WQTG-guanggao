@@ -1,0 +1,18 @@
+{
+  "app_name": "telegram_user_auto_reply_gui",
+  "log_level": "INFO",
+  "log_file": "logs/app.log",
+  "sessions_dir": "sessions",
+  "only_private_chat": true,
+  "ignore_bots": true,
+  "ignore_outgoing": true,
+  "ignore_self": true,
+  "text_only": true,
+  "reply_interval_seconds": 0.5,
+  "match_options": {
+    "ignore_case": true,
+    "strip_text": true
+  },
+  "template_source_account_name": "",
+  "template_source_chat_id": 0
+}
