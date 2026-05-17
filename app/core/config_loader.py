@@ -6,15 +6,15 @@ from typing import Any
 
 from app.core.models import (
     AccountConfig,
-    RuleConfig,
+    GroupConfig,
+    SendTaskConfig,
     Settings,
     TemplateConfig,
-    RULE_TYPE_KEYWORD,
-    REPLY_MODE_TEXT,
+    MESSAGE_MODE_TEXT,
+    SCHEDULE_MODE_MANUAL,
     TEMPLATE_MESSAGE_TYPE_TEXT,
     TEMPLATE_SEND_MODE_FORWARD,
 )
-from app.core.utils import split_keywords_text
 
 
 def _read_json_file(file_path: str | Path) -> Any:
@@ -29,16 +29,19 @@ def _read_json_file(file_path: str | Path) -> Any:
 def _write_json_file(file_path: str | Path, data: Any) -> None:
     path = Path(file_path).expanduser()
     path.parent.mkdir(parents=True, exist_ok=True)
+
     with path.open("w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
 def load_accounts(file_path: str) -> list[AccountConfig]:
     data = _read_json_file(file_path)
+
     if not isinstance(data, list):
         raise ValueError("accounts.json 必须是数组")
 
     accounts: list[AccountConfig] = []
+
     for item in data:
         accounts.append(
             AccountConfig(
@@ -50,6 +53,7 @@ def load_accounts(file_path: str) -> list[AccountConfig]:
                 enabled=bool(item.get("enabled", True)),
             )
         )
+
     return accounts
 
 
@@ -57,47 +61,78 @@ def save_accounts(file_path: str, accounts: list[AccountConfig]) -> None:
     _write_json_file(file_path, [account.to_dict() for account in accounts])
 
 
-def load_rules(file_path: str) -> list[RuleConfig]:
+def load_groups(file_path: str) -> list[GroupConfig]:
     data = _read_json_file(file_path)
+
     if not isinstance(data, list):
-        raise ValueError("rules.json 必须是数组")
+        raise ValueError("groups.json 必须是数组")
 
-    rules: list[RuleConfig] = []
+    groups: list[GroupConfig] = []
+
     for item in data:
-        raw_keywords = item.get("keywords", [])
-        if isinstance(raw_keywords, str):
-            keywords = split_keywords_text(raw_keywords)
-        elif isinstance(raw_keywords, list):
-            keywords = [str(k).strip() for k in raw_keywords if str(k).strip()]
-        else:
-            keywords = []
-
-        rules.append(
-            RuleConfig(
-                rule_name=str(item["rule_name"]),
-                rule_type=str(item.get("rule_type", RULE_TYPE_KEYWORD)),
-                trigger_name=str(item.get("trigger_name", "")),
-                keywords=keywords,
-                reply_text=str(item.get("reply_text", "")),
-                match_type=str(item.get("match_type", "contains")),
+        groups.append(
+            GroupConfig(
+                group_id=str(item.get("group_id", "")),
+                group_name=str(item.get("group_name", "")),
+                chat_id=int(item.get("chat_id", 0)),
+                username=str(item.get("username", "")),
+                remark=str(item.get("remark", "")),
                 enabled=bool(item.get("enabled", True)),
-                reply_mode=str(item.get("reply_mode", REPLY_MODE_TEXT)),
-                template_id=str(item.get("template_id", "")),
             )
         )
-    return rules
+
+    return groups
 
 
-def save_rules(file_path: str, rules: list[RuleConfig]) -> None:
-    _write_json_file(file_path, [rule.to_dict() for rule in rules])
+def save_groups(file_path: str, groups: list[GroupConfig]) -> None:
+    _write_json_file(file_path, [group.to_dict() for group in groups])
+
+
+def load_tasks(file_path: str) -> list[SendTaskConfig]:
+    data = _read_json_file(file_path)
+
+    if not isinstance(data, list):
+        raise ValueError("tasks.json 必须是数组")
+
+    tasks: list[SendTaskConfig] = []
+
+    for item in data:
+        tasks.append(
+            SendTaskConfig(
+                task_id=str(item.get("task_id", "")),
+                task_name=str(item.get("task_name", "")),
+                enabled=bool(item.get("enabled", True)),
+                account_name=str(item.get("account_name", "")),
+                group_id=str(item.get("group_id", "")),
+                message_mode=str(item.get("message_mode", MESSAGE_MODE_TEXT)),
+                text=str(item.get("text", "")),
+                template_id=str(item.get("template_id", "")),
+                schedule_mode=str(item.get("schedule_mode", SCHEDULE_MODE_MANUAL)),
+                interval_seconds=int(item.get("interval_seconds", 3600)),
+                daily_time=str(item.get("daily_time", "09:00")),
+                random_delay_min=int(item.get("random_delay_min", 0)),
+                random_delay_max=int(item.get("random_delay_max", 0)),
+                last_run_at=str(item.get("last_run_at", "")),
+                next_run_at=str(item.get("next_run_at", "")),
+                remark=str(item.get("remark", "")),
+            )
+        )
+
+    return tasks
+
+
+def save_tasks(file_path: str, tasks: list[SendTaskConfig]) -> None:
+    _write_json_file(file_path, [task.to_dict() for task in tasks])
 
 
 def load_templates(file_path: str) -> list[TemplateConfig]:
     data = _read_json_file(file_path)
+
     if not isinstance(data, list):
         raise ValueError("templates.json 必须是数组")
 
     templates: list[TemplateConfig] = []
+
     for item in data:
         templates.append(
             TemplateConfig(
@@ -119,6 +154,7 @@ def load_templates(file_path: str) -> list[TemplateConfig]:
                 created_at=str(item.get("created_at", "")),
             )
         )
+
     return templates
 
 
@@ -128,8 +164,10 @@ def save_templates(file_path: str, templates: list[TemplateConfig]) -> None:
 
 def load_settings(file_path: str) -> Settings:
     data = _read_json_file(file_path)
+
     if not isinstance(data, dict):
         raise ValueError("settings.json 必须是对象")
+
     return Settings.from_dict(data)
 
 

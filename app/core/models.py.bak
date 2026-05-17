@@ -4,23 +4,21 @@ from dataclasses import dataclass, field
 from typing import Any
 
 
+RULE_TYPE_KEYWORD = "keyword"
+RULE_TYPE_FIRST_CONTACT = "first_contact"
+
+FIRST_CONTACT_WELCOME = "welcome"
+FIRST_CONTACT_BUSINESS_HOURS = "business_hours"
+
+REPLY_MODE_TEXT = "text"
+REPLY_MODE_TEMPLATE = "template"
+
 TEMPLATE_MESSAGE_TYPE_TEXT = "text"
 TEMPLATE_MESSAGE_TYPE_PHOTO = "photo"
 TEMPLATE_MESSAGE_TYPE_ALBUM = "album"
 
 TEMPLATE_SEND_MODE_FORWARD = "forward"
 TEMPLATE_SEND_MODE_CLONE = "clone"
-
-MESSAGE_MODE_TEXT = "text"
-MESSAGE_MODE_TEMPLATE = "template"
-
-SCHEDULE_MODE_MANUAL = "manual"
-SCHEDULE_MODE_INTERVAL = "interval"
-SCHEDULE_MODE_DAILY = "daily"
-
-TASK_STATUS_IDLE = "idle"
-TASK_STATUS_RUNNING = "running"
-TASK_STATUS_ERROR = "error"
 
 
 @dataclass
@@ -46,7 +44,7 @@ class AccountConfig:
 @dataclass
 class RuleConfig:
     rule_name: str
-    rule_type: str = "keyword"
+    rule_type: str = RULE_TYPE_KEYWORD
     trigger_name: str = ""
     keywords: list[str] = field(default_factory=list)
     reply_text: str = ""
@@ -54,7 +52,7 @@ class RuleConfig:
     enabled: bool = True
 
     # 新增：回复模式
-    reply_mode: str = "text"
+    reply_mode: str = REPLY_MODE_TEXT
     template_id: str = ""
 
     def to_dict(self) -> dict[str, Any]:
@@ -112,88 +110,53 @@ class TemplateConfig:
 
 
 @dataclass
-class GroupConfig:
-    group_id: str
-    group_name: str
-    chat_id: int
-    username: str = ""
-    remark: str = ""
-    enabled: bool = True
+class MatchOptions:
+    ignore_case: bool = True
+    strip_text: bool = True
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "group_id": self.group_id,
-            "group_name": self.group_name,
-            "chat_id": self.chat_id,
-            "username": self.username,
-            "remark": self.remark,
-            "enabled": self.enabled,
+            "ignore_case": self.ignore_case,
+            "strip_text": self.strip_text,
         }
-
-
-@dataclass
-class SendTaskConfig:
-    task_id: str
-    task_name: str
-    enabled: bool = True
-    account_name: str = ""
-    group_id: str = ""
-    message_mode: str = MESSAGE_MODE_TEXT
-    text: str = ""
-    template_id: str = ""
-    schedule_mode: str = SCHEDULE_MODE_MANUAL
-    interval_seconds: int = 3600
-    daily_time: str = "09:00"
-    random_delay_min: int = 0
-    random_delay_max: int = 0
-    last_run_at: str = ""
-    next_run_at: str = ""
-    remark: str = ""
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "task_id": self.task_id,
-            "task_name": self.task_name,
-            "enabled": self.enabled,
-            "account_name": self.account_name,
-            "group_id": self.group_id,
-            "message_mode": self.message_mode,
-            "text": self.text,
-            "template_id": self.template_id,
-            "schedule_mode": self.schedule_mode,
-            "interval_seconds": self.interval_seconds,
-            "daily_time": self.daily_time,
-            "random_delay_min": self.random_delay_min,
-            "random_delay_max": self.random_delay_max,
-            "last_run_at": self.last_run_at,
-            "next_run_at": self.next_run_at,
-            "remark": self.remark,
-        }
-
 
 
 @dataclass
 class Settings:
-    app_name: str = "telegram_user_group_sender_gui"
+    app_name: str = "telegram_user_auto_reply_gui"
     log_level: str = "INFO"
     log_file: str = "logs/app.log"
     sessions_dir: str = ""
-    scheduler_tick_seconds: float = 1.0
-    max_concurrent_tasks: int = 1
-    default_send_interval_seconds: float = 1.0
+    only_private_chat: bool = True
+    ignore_bots: bool = True
+    ignore_outgoing: bool = True
+    ignore_self: bool = True
+    text_only: bool = True
+    reply_interval_seconds: float = 0.8
+    match_options: MatchOptions = field(default_factory=MatchOptions)
+
+    # 新增：素材群设置
     template_source_account_name: str = ""
     template_source_chat_id: int = 0
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Settings":
+        match_options_data = data.get("match_options", {}) or {}
         return cls(
-            app_name=str(data.get("app_name", "telegram_user_group_sender_gui")),
+            app_name=str(data.get("app_name", "telegram_user_auto_reply_gui")),
             log_level=str(data.get("log_level", "INFO")),
             log_file=str(data.get("log_file", "logs/app.log")),
-            sessions_dir=str(data.get("sessions_dir", "")),
-            scheduler_tick_seconds=float(data.get("scheduler_tick_seconds", 1.0)),
-            max_concurrent_tasks=int(data.get("max_concurrent_tasks", 1)),
-            default_send_interval_seconds=float(data.get("default_send_interval_seconds", 1.0)),
+            sessions_dir=str(data.get("sessions_dir", "sessions")),
+            only_private_chat=bool(data.get("only_private_chat", True)),
+            ignore_bots=bool(data.get("ignore_bots", True)),
+            ignore_outgoing=bool(data.get("ignore_outgoing", True)),
+            ignore_self=bool(data.get("ignore_self", True)),
+            text_only=bool(data.get("text_only", True)),
+            reply_interval_seconds=float(data.get("reply_interval_seconds", 0.8)),
+            match_options=MatchOptions(
+                ignore_case=bool(match_options_data.get("ignore_case", True)),
+                strip_text=bool(match_options_data.get("strip_text", True)),
+            ),
             template_source_account_name=str(data.get("template_source_account_name", "")),
             template_source_chat_id=int(data.get("template_source_chat_id", 0)),
         )
@@ -204,9 +167,13 @@ class Settings:
             "log_level": self.log_level,
             "log_file": self.log_file,
             "sessions_dir": self.sessions_dir,
-            "scheduler_tick_seconds": self.scheduler_tick_seconds,
-            "max_concurrent_tasks": self.max_concurrent_tasks,
-            "default_send_interval_seconds": self.default_send_interval_seconds,
+            "only_private_chat": self.only_private_chat,
+            "ignore_bots": self.ignore_bots,
+            "ignore_outgoing": self.ignore_outgoing,
+            "ignore_self": self.ignore_self,
+            "text_only": self.text_only,
+            "reply_interval_seconds": self.reply_interval_seconds,
+            "match_options": self.match_options.to_dict(),
             "template_source_account_name": self.template_source_account_name,
             "template_source_chat_id": self.template_source_chat_id,
         }
