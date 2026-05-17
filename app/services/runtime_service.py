@@ -4,7 +4,6 @@ import asyncio
 import concurrent.futures
 import threading
 from pathlib import Path
-from typing import Any
 
 from PySide6.QtCore import QObject, Signal
 
@@ -55,8 +54,6 @@ class RuntimeService(QObject):
             self.templates,
             self.settings,
         ) = self.config_service.load_all()
-
-        self.rules: list[Any] = []
 
         self._apply_runtime_paths()
 
@@ -244,10 +241,6 @@ class RuntimeService(QObject):
                 tasks=self.tasks,
                 settings=self.settings,
             )
-
-    def save_rules(self, rules) -> None:
-        self.rules = list(rules)
-        self._emit_log("warning", "自动回复规则已废弃，save_rules 已忽略")
 
     def _thread_main(self) -> None:
         self._loop = asyncio.new_event_loop()
