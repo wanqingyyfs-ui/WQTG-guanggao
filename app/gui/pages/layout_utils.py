@@ -19,24 +19,23 @@ from PySide6.QtWidgets import (
 
 CONTROL_MIN_HEIGHT = 54
 TEXT_EDIT_MIN_HEIGHT = 150
-TABLE_MIN_HEIGHT = 260
+TABLE_MIN_HEIGHT = 120
 
 
 SPLITTER_QSS = """
 QSplitter::handle {
-    background-color: #d7dde7;
-    border-top: 1px solid #b8c2d1;
-    border-bottom: 1px solid #b8c2d1;
-    margin: 2px 80px 2px 80px;
+    background-color: #7f91aa;
+    border-top: 1px solid #5f718a;
+    border-bottom: 1px solid #5f718a;
     border-radius: 3px;
 }
 
 QSplitter::handle:hover {
-    background-color: #9fb0c7;
+    background-color: #4f6480;
 }
 
 QSplitter::handle:pressed {
-    background-color: #7387a3;
+    background-color: #2f4058;
 }
 """
 
@@ -57,49 +56,34 @@ QGroupBox::title {
 
 def style_standard_control(widget: QWidget) -> None:
     widget.setMinimumHeight(CONTROL_MIN_HEIGHT)
-    widget.setSizePolicy(
-        QSizePolicy.Policy.Expanding,
-        QSizePolicy.Policy.Fixed,
-    )
+    widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
 
 def style_text_editor(widget: QWidget, min_height: int = TEXT_EDIT_MIN_HEIGHT) -> None:
     widget.setMinimumHeight(min_height)
-    widget.setSizePolicy(
-        QSizePolicy.Policy.Expanding,
-        QSizePolicy.Policy.Expanding,
-    )
+    widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
 
 def style_table(table: QTableWidget) -> None:
     table.setAlternatingRowColors(True)
     table.setMinimumHeight(TABLE_MIN_HEIGHT)
     table.setMaximumHeight(16777215)
-    table.setSizePolicy(
-        QSizePolicy.Policy.Expanding,
-        QSizePolicy.Policy.Expanding,
-    )
+    table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
 
 def style_form_layout(form_layout: QFormLayout) -> None:
     form_layout.setContentsMargins(28, 26, 28, 26)
     form_layout.setHorizontalSpacing(24)
     form_layout.setVerticalSpacing(18)
-    form_layout.setLabelAlignment(
-        Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
-    )
+    form_layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
     form_layout.setFormAlignment(Qt.AlignmentFlag.AlignTop)
-    form_layout.setFieldGrowthPolicy(
-        QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow
-    )
+    form_layout.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
 
 
 def style_group_box(group_box: QGroupBox) -> None:
     group_box.setStyleSheet(GROUP_BOX_QSS)
-    group_box.setSizePolicy(
-        QSizePolicy.Policy.Expanding,
-        QSizePolicy.Policy.MinimumExpanding,
-    )
+    group_box.setMinimumHeight(0)
+    group_box.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
 
 def apply_large_inputs(root: QWidget) -> None:
@@ -112,7 +96,7 @@ def apply_large_inputs(root: QWidget) -> None:
 
 def make_scroll_area(
     widget: QWidget,
-    minimum_height: int = 180,
+    minimum_height: int = 0,
     horizontal: Qt.ScrollBarPolicy = Qt.ScrollBarPolicy.ScrollBarAsNeeded,
     vertical: Qt.ScrollBarPolicy = Qt.ScrollBarPolicy.ScrollBarAsNeeded,
 ) -> QScrollArea:
@@ -121,12 +105,9 @@ def make_scroll_area(
     scroll_area.setFrameShape(QScrollArea.Shape.NoFrame)
     scroll_area.setHorizontalScrollBarPolicy(horizontal)
     scroll_area.setVerticalScrollBarPolicy(vertical)
-    scroll_area.setMinimumHeight(minimum_height)
+    scroll_area.setMinimumHeight(0)
     scroll_area.setWidget(widget)
-    scroll_area.setSizePolicy(
-        QSizePolicy.Policy.Expanding,
-        QSizePolicy.Policy.Expanding,
-    )
+    scroll_area.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
     return scroll_area
 
 
@@ -135,14 +116,19 @@ def make_vertical_splitter(
     bottom_widget: QWidget,
     sizes: list[int] | None = None,
 ) -> QSplitter:
+    top_widget.setMinimumHeight(0)
+    bottom_widget.setMinimumHeight(0)
+
     splitter = QSplitter(Qt.Orientation.Vertical)
     splitter.addWidget(top_widget)
     splitter.addWidget(bottom_widget)
-    splitter.setChildrenCollapsible(False)
-    splitter.setHandleWidth(10)
+    splitter.setChildrenCollapsible(True)
+    splitter.setCollapsible(0, True)
+    splitter.setCollapsible(1, True)
+    splitter.setHandleWidth(12)
     splitter.setStyleSheet(SPLITTER_QSS)
-    splitter.setStretchFactor(0, 4)
-    splitter.setStretchFactor(1, 6)
+    splitter.setStretchFactor(0, 1)
+    splitter.setStretchFactor(1, 1)
 
     if sizes:
         splitter.setSizes(sizes)
