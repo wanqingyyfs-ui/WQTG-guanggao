@@ -32,6 +32,15 @@ from app.core.models import (
     SendTaskConfig,
     TemplateConfig,
 )
+from app.gui.pages.layout_utils import (
+    apply_large_inputs,
+    make_scroll_area,
+    make_vertical_splitter,
+    style_form_layout,
+    style_group_box,
+    style_table,
+    style_text_editor,
+)
 
 
 class TaskPage(QWidget):
@@ -51,6 +60,7 @@ class TaskPage(QWidget):
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        style_table(self.table)
 
         self.name_edit = QLineEdit()
         self.enabled_check = QCheckBox("启用")
@@ -63,7 +73,7 @@ class TaskPage(QWidget):
         self.message_mode_combo.addItem("模板", MESSAGE_MODE_TEMPLATE)
 
         self.text_edit = QPlainTextEdit()
-        self.text_edit.setFixedHeight(90)
+        style_text_editor(self.text_edit, 180)
 
         self.template_combo = QComboBox()
 
@@ -90,7 +100,7 @@ class TaskPage(QWidget):
         self.random_delay_max_spin.setSuffix(" 秒")
 
         self.remark_edit = QPlainTextEdit()
-        self.remark_edit.setFixedHeight(70)
+        style_text_editor(self.remark_edit, 140)
 
         self.add_button = QPushButton("新增任务")
         self.save_button = QPushButton("保存任务")
@@ -100,7 +110,10 @@ class TaskPage(QWidget):
         self.send_once_button = QPushButton("立即发送一次")
 
         form_group = QGroupBox("任务配置")
+        style_group_box(form_group)
+
         form_layout = QFormLayout(form_group)
+        style_form_layout(form_layout)
         form_layout.addRow("任务名称", self.name_edit)
         form_layout.addRow("启用状态", self.enabled_check)
         form_layout.addRow("发送账号", self.account_combo)
@@ -115,24 +128,52 @@ class TaskPage(QWidget):
         form_layout.addRow("随机延迟最大秒", self.random_delay_max_spin)
         form_layout.addRow("备注", self.remark_edit)
 
-        button_layout = QHBoxLayout()
+        apply_large_inputs(form_group)
+
+        button_bar = QWidget()
+        button_layout = QHBoxLayout(button_bar)
+        button_layout.setContentsMargins(12, 12, 12, 12)
+        button_layout.setSpacing(14)
         button_layout.addWidget(self.add_button)
         button_layout.addWidget(self.save_button)
         button_layout.addWidget(self.delete_button)
         button_layout.addWidget(self.up_button)
         button_layout.addWidget(self.down_button)
-        button_layout.addWidget(self.send_once_button)
         button_layout.addStretch(1)
+        button_layout.addWidget(self.send_once_button)
 
         table_group = QGroupBox("群发任务列表")
+        style_group_box(table_group)
         table_layout = QVBoxLayout(table_group)
+        table_layout.setContentsMargins(18, 20, 18, 18)
         table_layout.addWidget(self.table)
 
+        top_widget = QWidget()
+        top_layout = QVBoxLayout(top_widget)
+        top_layout.setContentsMargins(0, 0, 0, 0)
+        top_layout.setSpacing(10)
+        top_layout.addWidget(QLabel("群发任务管理"))
+        top_layout.addWidget(make_scroll_area(table_group, minimum_height=240), 1)
+
+        bottom_content = QWidget()
+        bottom_layout = QVBoxLayout(bottom_content)
+        bottom_layout.setContentsMargins(0, 0, 0, 0)
+        bottom_layout.setSpacing(12)
+        bottom_layout.addWidget(form_group)
+        bottom_layout.addWidget(button_bar)
+
+        bottom_scroll = make_scroll_area(bottom_content, minimum_height=320)
+
+        splitter = make_vertical_splitter(
+            top_widget=top_widget,
+            bottom_widget=bottom_scroll,
+            sizes=[330, 560],
+        )
+
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel("群发任务管理"))
-        layout.addWidget(table_group)
-        layout.addWidget(form_group)
-        layout.addLayout(button_layout)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        layout.addWidget(splitter)
 
         self.table.itemSelectionChanged.connect(self.on_selection_changed)
         self.message_mode_combo.currentIndexChanged.connect(self.on_message_mode_changed)

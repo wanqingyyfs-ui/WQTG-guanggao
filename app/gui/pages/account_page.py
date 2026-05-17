@@ -6,91 +6,75 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QLineEdit,
     QPushButton,
-    QScrollArea,
-    QSplitter,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
-    QSizePolicy,
 )
 
 from app.core.models import AccountConfig
+from app.gui.pages.layout_utils import (
+    apply_large_inputs,
+    make_scroll_area,
+    make_vertical_splitter,
+    style_form_layout,
+    style_group_box,
+    style_table,
+)
 
 
 class AccountPage(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
+
         self.accounts: list[AccountConfig] = []
         self.status_map: dict[str, tuple[str, str]] = {}
 
         self.table = QTableWidget(0, 5)
-        self.table.setAlternatingRowColors(True)
-        self.table.setMinimumHeight(220)
-        self.table.setMaximumHeight(16777215)
-        self.table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self.table.setHorizontalHeaderLabels(["账号名", "手机号", "启用", "状态", "详情"])
-        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.setHorizontalHeaderLabels(
+            ["账号名", "手机号", "启用", "状态", "详情"]
+        )
+        self.table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Stretch
+        )
+        self.table.setSelectionBehavior(
+            QTableWidget.SelectionBehavior.SelectRows
+        )
+        self.table.setSelectionMode(
+            QTableWidget.SelectionMode.SingleSelection
+        )
+        self.table.setEditTriggers(
+            QTableWidget.EditTrigger.NoEditTriggers
+        )
+        style_table(self.table)
 
         self.account_name_edit = QLineEdit()
         self.api_id_edit = QLineEdit()
         self.api_hash_edit = QLineEdit()
         self.phone_edit = QLineEdit()
         self.session_name_edit = QLineEdit()
+
         self.enabled_checkbox = QCheckBox("启用此账号")
-        for widget in [
-            self.account_name_edit,
-            self.api_id_edit,
-            self.api_hash_edit,
-            self.phone_edit,
-            self.session_name_edit,
-        ]:
-            widget.setMinimumWidth(420)
-            widget.setMinimumHeight(42)
-            widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.enabled_checkbox.setChecked(True)
 
-        form_group = QGroupBox("账号编辑")
-        form_group.setObjectName("accountFormGroup")
-        groupbox_title_style = """
-        QGroupBox#templateFormGroup,
-        QGroupBox#accountFormGroup {
-            margin-top: 28px;
-            padding-top: 22px;
-        }
-
-        QGroupBox#templateFormGroup::title,
-        QGroupBox#accountFormGroup::title {
-            subcontrol-origin: margin;
-            left: 16px;
-            padding: 2px 10px 2px 10px;
-        }
-        """
-
-        form_group.setStyleSheet(groupbox_title_style)
-        form_group.setMinimumHeight(520)
-        form_group.setMinimumWidth(1180)
-        form_group.setSizePolicy(
-            QSizePolicy.Policy.Expanding,
-            QSizePolicy.Policy.MinimumExpanding,
-        )
+        form_group = QGroupBox("账号配置")
+        style_group_box(form_group)
 
         form_layout = QFormLayout(form_group)
-        form_layout.setContentsMargins(26, 24, 26, 24)
-        form_layout.setHorizontalSpacing(24)
-        form_layout.setVerticalSpacing(16)
-        form_layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
-        form_layout.setFormAlignment(Qt.AlignmentFlag.AlignTop)
-        form_layout.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+        style_form_layout(form_layout)
 
-        form_layout.addRow("账号名称：", self.account_name_edit)
-        form_layout.addRow("API ID：", self.api_id_edit)
-        form_layout.addRow("API Hash：", self.api_hash_edit)
-        form_layout.addRow("手机号：", self.phone_edit)
-        form_layout.addRow("Session 名称：", self.session_name_edit)
-        form_layout.addRow("", self.enabled_checkbox)
+        form_layout.addRow("账号名称", self.account_name_edit)
+        form_layout.addRow("API ID", self.api_id_edit)
+        form_layout.addRow("API Hash", self.api_hash_edit)
+        form_layout.addRow("手机号", self.phone_edit)
+        form_layout.addRow("Session 名称", self.session_name_edit)
+        form_layout.addRow("启用状态", self.enabled_checkbox)
+
+        apply_large_inputs(form_group)
 
         self.add_button = QPushButton("新增账号")
         self.save_button = QPushButton("保存账号")
@@ -100,96 +84,120 @@ class AccountPage(QWidget):
         self.stop_button = QPushButton("停止该账号")
 
         button_bar = QWidget()
-        button_bar.setMinimumHeight(72)
-        button_bar.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-
         button_layout = QHBoxLayout(button_bar)
-        button_layout.setContentsMargins(12, 10, 12, 10)
-        button_layout.setSpacing(12)
+        button_layout.setContentsMargins(12, 12, 12, 12)
+        button_layout.setSpacing(14)
+
         button_layout.addWidget(self.add_button)
         button_layout.addWidget(self.save_button)
         button_layout.addWidget(self.delete_button)
-        button_layout.addStretch()
+
+        button_layout.addStretch(1)
+
         button_layout.addWidget(self.login_button)
         button_layout.addWidget(self.start_button)
         button_layout.addWidget(self.stop_button)
 
+        table_group = QGroupBox("账号列表")
+        style_group_box(table_group)
+
+        table_layout = QVBoxLayout(table_group)
+        table_layout.setContentsMargins(18, 20, 18, 18)
+        table_layout.addWidget(self.table)
+
         top_widget = QWidget()
         top_layout = QVBoxLayout(top_widget)
-        top_layout.setContentsMargins(0, 4, 0, 0)
-        top_layout.setSpacing(18)
-        top_layout.addWidget(QLabel("账号列表"))
+        top_layout.setContentsMargins(0, 0, 0, 0)
+        top_layout.setSpacing(10)
+        top_layout.addWidget(QLabel("账号管理"))
+        top_layout.addWidget(
+            make_scroll_area(table_group, minimum_height=240),
+            1,
+        )
 
-        table_scroll = QScrollArea()
-        table_scroll.setWidgetResizable(True)
-        table_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
-        table_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        table_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        table_scroll.setMinimumHeight(180)
-        table_scroll.setWidget(self.table)
-
-        top_layout.addWidget(table_scroll)
-
-        form_scroll = QScrollArea()
-        form_scroll.setWidgetResizable(True)
-        form_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
-        form_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        form_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        form_scroll.setMinimumHeight(380)
-        form_scroll.setWidget(form_group)
-
-        bottom_widget = QWidget()
-        bottom_layout = QVBoxLayout(bottom_widget)
+        bottom_content = QWidget()
+        bottom_layout = QVBoxLayout(bottom_content)
         bottom_layout.setContentsMargins(0, 0, 0, 0)
-        bottom_layout.setSpacing(10)
-        bottom_layout.addWidget(form_scroll, 1)
-        bottom_layout.addWidget(button_bar, 0)
+        bottom_layout.setSpacing(12)
+        bottom_layout.addWidget(form_group)
+        bottom_layout.addWidget(button_bar)
 
-        splitter = QSplitter(Qt.Orientation.Vertical)
-        splitter.addWidget(top_widget)
-        splitter.addWidget(bottom_widget)
-        splitter.setChildrenCollapsible(False)
-        splitter.setHandleWidth(6)
-        splitter.setStretchFactor(0, 2)
-        splitter.setStretchFactor(1, 3)
-        splitter.setSizes([240, 520])
-        splitter.setStyleSheet("""
-        QSplitter::handle {
-            background-color: #d0d0d0;
-        }
-        QSplitter::handle:hover {
-            background-color: #b0b0b0;
-        }
-        """)
+        bottom_scroll = make_scroll_area(
+            bottom_content,
+            minimum_height=340,
+        )
+
+        splitter = make_vertical_splitter(
+            top_widget=top_widget,
+            bottom_widget=bottom_scroll,
+            sizes=[320, 560],
+        )
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(10)
+        layout.setSpacing(0)
         layout.addWidget(splitter)
 
-        self.table.itemSelectionChanged.connect(self.load_selected_account)
+        self.table.itemSelectionChanged.connect(
+            self.load_selected_account
+        )
 
-    def set_accounts(self, accounts: list[AccountConfig], status_map: dict[str, tuple[str, str]]) -> None:
-        self.accounts = accounts
-        self.status_map = status_map
+    def set_accounts(
+        self,
+        accounts: list[AccountConfig],
+        status_map: dict[str, tuple[str, str]],
+    ) -> None:
+        self.accounts = list(accounts)
+        self.status_map = dict(status_map)
         self.refresh_table()
 
     def refresh_table(self) -> None:
         self.table.setRowCount(len(self.accounts))
+
         for row, account in enumerate(self.accounts):
-            status, detail = self.status_map.get(account.account_name, ("idle", "未启动"))
-            self.table.setItem(row, 0, QTableWidgetItem(account.account_name))
-            self.table.setItem(row, 1, QTableWidgetItem(account.phone))
-            self.table.setItem(row, 2, QTableWidgetItem("是" if account.enabled else "否"))
-            self.table.setItem(row, 3, QTableWidgetItem(status))
-            self.table.setItem(row, 4, QTableWidgetItem(detail))
+            status, detail = self.status_map.get(
+                account.account_name,
+                ("idle", "未启动"),
+            )
+
+            self.table.setItem(
+                row,
+                0,
+                QTableWidgetItem(account.account_name),
+            )
+
+            self.table.setItem(
+                row,
+                1,
+                QTableWidgetItem(account.phone),
+            )
+
+            self.table.setItem(
+                row,
+                2,
+                QTableWidgetItem("是" if account.enabled else "否"),
+            )
+
+            self.table.setItem(
+                row,
+                3,
+                QTableWidgetItem(status),
+            )
+
+            self.table.setItem(
+                row,
+                4,
+                QTableWidgetItem(detail),
+            )
 
     def load_selected_account(self) -> None:
         row = self.table.currentRow()
+
         if row < 0 or row >= len(self.accounts):
             return
 
         account = self.accounts[row]
+
         self.account_name_edit.setText(account.account_name)
         self.api_id_edit.setText(str(account.api_id))
         self.api_hash_edit.setText(account.api_hash)
@@ -198,17 +206,30 @@ class AccountPage(QWidget):
         self.enabled_checkbox.setChecked(account.enabled)
 
     def clear_form(self) -> None:
+        self.table.clearSelection()
+
         self.account_name_edit.clear()
         self.api_id_edit.clear()
         self.api_hash_edit.clear()
         self.phone_edit.clear()
         self.session_name_edit.clear()
+
         self.enabled_checkbox.setChecked(True)
 
     def get_form_account(self) -> AccountConfig:
+        api_id_text = self.api_id_edit.text().strip()
+
+        if not api_id_text:
+            raise ValueError("API ID 不能为空")
+
+        try:
+            api_id = int(api_id_text)
+        except ValueError as exc:
+            raise ValueError("API ID 必须是数字") from exc
+
         return AccountConfig(
             account_name=self.account_name_edit.text().strip(),
-            api_id=int(self.api_id_edit.text().strip()),
+            api_id=api_id,
             api_hash=self.api_hash_edit.text().strip(),
             phone=self.phone_edit.text().strip(),
             session_name=self.session_name_edit.text().strip(),

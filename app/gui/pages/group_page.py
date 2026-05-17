@@ -20,6 +20,15 @@ from PySide6.QtWidgets import (
 )
 
 from app.core.models import GroupConfig
+from app.gui.pages.layout_utils import (
+    apply_large_inputs,
+    make_scroll_area,
+    make_vertical_splitter,
+    style_form_layout,
+    style_group_box,
+    style_table,
+    style_text_editor,
+)
 
 
 class GroupPage(QWidget):
@@ -34,12 +43,14 @@ class GroupPage(QWidget):
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        style_table(self.table)
 
         self.name_edit = QLineEdit()
         self.chat_id_edit = QLineEdit()
         self.username_edit = QLineEdit()
         self.remark_edit = QPlainTextEdit()
-        self.remark_edit.setFixedHeight(80)
+        style_text_editor(self.remark_edit, 170)
+
         self.enabled_check = QCheckBox("启用")
         self.enabled_check.setChecked(True)
 
@@ -48,28 +59,59 @@ class GroupPage(QWidget):
         self.delete_button = QPushButton("删除")
 
         form_group = QGroupBox("群组配置")
+        style_group_box(form_group)
+
         form_layout = QFormLayout(form_group)
+        style_form_layout(form_layout)
         form_layout.addRow("群组名称", self.name_edit)
         form_layout.addRow("Chat ID", self.chat_id_edit)
         form_layout.addRow("Username/链接", self.username_edit)
         form_layout.addRow("备注", self.remark_edit)
         form_layout.addRow("启用状态", self.enabled_check)
 
-        button_layout = QHBoxLayout()
+        apply_large_inputs(form_group)
+
+        button_bar = QWidget()
+        button_layout = QHBoxLayout(button_bar)
+        button_layout.setContentsMargins(12, 12, 12, 12)
+        button_layout.setSpacing(14)
         button_layout.addWidget(self.add_button)
         button_layout.addWidget(self.save_button)
         button_layout.addWidget(self.delete_button)
         button_layout.addStretch(1)
 
         table_group = QGroupBox("目标群列表")
+        style_group_box(table_group)
         table_layout = QVBoxLayout(table_group)
+        table_layout.setContentsMargins(18, 20, 18, 18)
         table_layout.addWidget(self.table)
 
+        top_widget = QWidget()
+        top_layout = QVBoxLayout(top_widget)
+        top_layout.setContentsMargins(0, 0, 0, 0)
+        top_layout.setSpacing(10)
+        top_layout.addWidget(QLabel("目标群管理"))
+        top_layout.addWidget(make_scroll_area(table_group, minimum_height=240), 1)
+
+        bottom_content = QWidget()
+        bottom_layout = QVBoxLayout(bottom_content)
+        bottom_layout.setContentsMargins(0, 0, 0, 0)
+        bottom_layout.setSpacing(12)
+        bottom_layout.addWidget(form_group)
+        bottom_layout.addWidget(button_bar)
+
+        bottom_scroll = make_scroll_area(bottom_content, minimum_height=320)
+
+        splitter = make_vertical_splitter(
+            top_widget=top_widget,
+            bottom_widget=bottom_scroll,
+            sizes=[340, 520],
+        )
+
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel("目标群管理"))
-        layout.addWidget(table_group)
-        layout.addWidget(form_group)
-        layout.addLayout(button_layout)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        layout.addWidget(splitter)
 
         self.table.itemSelectionChanged.connect(self.on_selection_changed)
 
