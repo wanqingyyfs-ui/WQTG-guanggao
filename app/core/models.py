@@ -44,34 +44,6 @@ class AccountConfig:
 
 
 @dataclass
-class RuleConfig:
-    rule_name: str
-    rule_type: str = "keyword"
-    trigger_name: str = ""
-    keywords: list[str] = field(default_factory=list)
-    reply_text: str = ""
-    match_type: str = "contains"
-    enabled: bool = True
-
-    # 新增：回复模式
-    reply_mode: str = "text"
-    template_id: str = ""
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "rule_name": self.rule_name,
-            "rule_type": self.rule_type,
-            "trigger_name": self.trigger_name,
-            "keywords": self.keywords,
-            "reply_text": self.reply_text,
-            "match_type": self.match_type,
-            "enabled": self.enabled,
-            "reply_mode": self.reply_mode,
-            "template_id": self.template_id,
-        }
-
-
-@dataclass
 class TemplateConfig:
     template_id: str
     template_name: str
@@ -171,7 +143,6 @@ class SendTaskConfig:
         }
 
 
-
 @dataclass
 class Settings:
     app_name: str = "telegram_user_group_sender_gui"
@@ -193,8 +164,12 @@ class Settings:
             sessions_dir=str(data.get("sessions_dir", "")),
             scheduler_tick_seconds=float(data.get("scheduler_tick_seconds", 1.0)),
             max_concurrent_tasks=int(data.get("max_concurrent_tasks", 1)),
-            default_send_interval_seconds=float(data.get("default_send_interval_seconds", 1.0)),
-            template_source_account_name=str(data.get("template_source_account_name", "")),
+            default_send_interval_seconds=float(
+                data.get("default_send_interval_seconds", 1.0)
+            ),
+            template_source_account_name=str(
+                data.get("template_source_account_name", "")
+            ),
             template_source_chat_id=int(data.get("template_source_chat_id", 0)),
         )
 
