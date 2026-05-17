@@ -1,19 +1,26 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+from pathlib import Path
+
+project_root = Path.cwd()
+
+datas = [
+    ("app.ico", "."),
+]
 
 a = Analysis(
-    ['main.py'],
-    pathex=[],
+    ["main.py"],
+    pathex=[str(project_root)],
     binaries=[],
-    datas=[('favicon.ico', '.')],
+    datas=datas,
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
     excludes=[],
     noarchive=False,
-    optimize=0,
 )
+
 pyz = PYZ(a.pure)
 
 exe = EXE(
@@ -22,7 +29,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='万青TG自动回复',
+    name="万青TG群发任务",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -35,5 +42,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['favicon.ico'],
+    icon="app.ico",
 )

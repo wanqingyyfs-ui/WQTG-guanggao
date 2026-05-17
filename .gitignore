@@ -1,15 +1,37 @@
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
+*.pyo
+*.pyd
 
-venv/
+# Virtual Environment
 .venv/
+venv/
 
+# Build
 build/
+dist/
+*.spec.bak
 
-sessions/
+# PyInstaller
+*.manifest
+*.pkg
 
+# Logs
 *.log
-.env
 
-.DS_Store
+# IDE
+.vscode/
+.idea/
+
+# Windows
 Thumbs.db
+Desktop.ini
+
+# Runtime Data
+sessions/
+config/
+data/
+
+# Executables
+*.exe

@@ -38,7 +38,10 @@ class MainWindow(QMainWindow):
         super().__init__()
 
         self.setWindowTitle("Telegram 用户号群发任务面板")
-        self.setWindowIcon(QIcon(resource_path("favicon.ico")))
+        icon_path = Path(__file__).resolve().parents[2] / "app.ico"
+
+        if icon_path.exists():
+            self.setWindowIcon(QIcon(str(icon_path)))
         self.setFixedSize(1280, 860)
         self.setStyleSheet(APP_QSS)
 
