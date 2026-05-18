@@ -1,37 +1,62 @@
-# Python
+# Python cache
 __pycache__/
 *.py[cod]
 *.pyo
 *.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
-# Virtual Environment
+# Virtual environments
 .venv/
 venv/
+env/
+ENV/
 
-# Build
+# Build artifacts
 build/
 dist/
 *.spec.bak
 
-# PyInstaller
+# PyInstaller artifacts
 *.manifest
 *.pkg
 
 # Logs
 *.log
+logs/
+task_send.jsonl
+
+# Runtime data
+sessions/
+config/
+data/
+
+# Local app data backup folders
+万青TG群发任务/
+.tg_group_sender/
 
 # IDE
 .vscode/
 .idea/
 
-# Windows
+# OS files
 Thumbs.db
 Desktop.ini
+.DS_Store
 
-# Runtime Data
-sessions/
-config/
-data/
-
-# Executables
+# Executables and binary outputs
 *.exe
+*.dll
+*.so
+*.dylib
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.old
+
+# Environment files
+.env
+.env.*

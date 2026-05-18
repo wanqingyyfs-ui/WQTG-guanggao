@@ -2,22 +2,36 @@
 
 from pathlib import Path
 
-project_root = Path.cwd()
+from PyInstaller.utils.hooks import collect_submodules
 
-datas = [
-    ("app.ico", "."),
-]
+
+project_root = Path.cwd()
+app_icon = project_root / "app.ico"
+
+datas = []
+
+if app_icon.exists():
+    datas.append((str(app_icon), "."))
+
+hiddenimports = []
+hiddenimports += collect_submodules("telethon")
 
 a = Analysis(
     ["main.py"],
     pathex=[str(project_root)],
     binaries=[],
     datas=datas,
-    hiddenimports=[],
+    hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=[
+        "tkinter",
+        "unittest",
+        "pytest",
+        "IPython",
+        "notebook",
+    ],
     noarchive=False,
 )
 
@@ -42,5 +56,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon="app.ico",
+    icon=str(app_icon) if app_icon.exists() else None,
 )
