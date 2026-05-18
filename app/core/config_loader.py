@@ -5,15 +5,17 @@ from pathlib import Path
 from typing import Any
 
 from app.core.models import (
+    ACCOUNT_ROTATE_MODE_ROUND_ROBIN,
+    ACCOUNT_ROTATE_MODE_SINGLE,
     AccountConfig,
     GroupConfig,
-    SendTaskConfig,
-    Settings,
-    TemplateConfig,
     MESSAGE_MODE_TEXT,
     SCHEDULE_MODE_MANUAL,
+    SendTaskConfig,
+    Settings,
     TEMPLATE_MESSAGE_TYPE_TEXT,
     TEMPLATE_SEND_MODE_FORWARD,
+    TemplateConfig,
 )
 
 
@@ -34,6 +36,127 @@ def _write_json_file(file_path: str | Path, data: Any) -> None:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
+def _as_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    return {}
+
+
+def _to_str(value: Any, default: str = "") -> str:
+    if value is None:
+        return default
+    return str(value)
+
+
+def _to_int(value: Any, default: int = 0) -> int:
+    try:
+        if value is None or value == "":
+            return default
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _to_float(value: Any, default: float = 0.0) -> float:
+    try:
+        if value is None or value == "":
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _to_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+
+    if isinstance(value, bool):
+        return value
+
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "y", "on", "是", "启用"}:
+            return True
+        if normalized in {"0", "false", "no", "n", "off", "否", "禁用"}:
+            return False
+
+    return bool(value)
+
+
+def _to_str_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+
+    if isinstance(value, str):
+        raw_items = [value]
+    elif isinstance(value, list | tuple | set):
+        raw_items = list(value)
+    else:
+        return []
+
+    result: list[str] = []
+
+    for item in raw_items:
+        text = str(item or "").strip()
+        if text and text not in result:
+            result.append(text)
+
+    return result
+
+
+def _to_int_list(value: Any) -> list[int]:
+    if value is None:
+        return []
+
+    if isinstance(value, int):
+        return [value]
+
+    if isinstance(value, str):
+        raw_items = [item.strip() for item in value.split(",")]
+    elif isinstance(value, list | tuple | set):
+        raw_items = list(value)
+    else:
+        return []
+
+    result: list[int] = []
+
+    for item in raw_items:
+        if item is None or item == "":
+            continue
+
+        try:
+            result.append(int(item))
+        except (TypeError, ValueError):
+            continue
+
+    return result
+
+
+def _normalize_account_names(item: dict[str, Any]) -> list[str]:
+    account_names = _to_str_list(item.get("account_names"))
+    account_name = _to_str(item.get("account_name", "")).strip()
+
+    if not account_names and account_name:
+        account_names = [account_name]
+
+    if account_name and account_name not in account_names:
+        account_names.insert(0, account_name)
+
+    return account_names
+
+
+def _normalize_rotate_mode(value: Any) -> str:
+    rotate_mode = _to_str(value, ACCOUNT_ROTATE_MODE_SINGLE).strip()
+
+    if rotate_mode not in {
+        ACCOUNT_ROTATE_MODE_SINGLE,
+        ACCOUNT_ROTATE_MODE_ROUND_ROBIN,
+    }:
+        return ACCOUNT_ROTATE_MODE_SINGLE
+
+    return rotate_mode
+
+
 def load_accounts(file_path: str) -> list[AccountConfig]:
     data = _read_json_file(file_path)
 
@@ -42,15 +165,17 @@ def load_accounts(file_path: str) -> list[AccountConfig]:
 
     accounts: list[AccountConfig] = []
 
-    for item in data:
+    for raw_item in data:
+        item = _as_dict(raw_item)
+
         accounts.append(
             AccountConfig(
-                account_name=str(item["account_name"]),
-                api_id=int(item["api_id"]),
-                api_hash=str(item["api_hash"]),
-                phone=str(item["phone"]),
-                session_name=str(item["session_name"]),
-                enabled=bool(item.get("enabled", True)),
+                account_name=_to_str(item.get("account_name", "")).strip(),
+                api_id=_to_int(item.get("api_id"), 0),
+                api_hash=_to_str(item.get("api_hash", "")).strip(),
+                phone=_to_str(item.get("phone", "")).strip(),
+                session_name=_to_str(item.get("session_name", "")).strip(),
+                enabled=_to_bool(item.get("enabled"), True),
             )
         )
 
@@ -69,15 +194,17 @@ def load_groups(file_path: str) -> list[GroupConfig]:
 
     groups: list[GroupConfig] = []
 
-    for item in data:
+    for raw_item in data:
+        item = _as_dict(raw_item)
+
         groups.append(
             GroupConfig(
-                group_id=str(item.get("group_id", "")),
-                group_name=str(item.get("group_name", "")),
-                chat_id=int(item.get("chat_id", 0)),
-                username=str(item.get("username", "")),
-                remark=str(item.get("remark", "")),
-                enabled=bool(item.get("enabled", True)),
+                group_id=_to_str(item.get("group_id", "")).strip(),
+                group_name=_to_str(item.get("group_name", "")).strip(),
+                chat_id=_to_int(item.get("chat_id"), 0),
+                username=_to_str(item.get("username", "")).strip(),
+                remark=_to_str(item.get("remark", "")),
+                enabled=_to_bool(item.get("enabled"), True),
             )
         )
 
@@ -96,25 +223,43 @@ def load_tasks(file_path: str) -> list[SendTaskConfig]:
 
     tasks: list[SendTaskConfig] = []
 
-    for item in data:
+    for raw_item in data:
+        item = _as_dict(raw_item)
+        account_names = _normalize_account_names(item)
+        account_name = _to_str(item.get("account_name", "")).strip()
+
+        if not account_name and account_names:
+            account_name = account_names[0]
+
+        current_account_index = _to_int(item.get("current_account_index"), 0)
+        if current_account_index < 0:
+            current_account_index = 0
+
         tasks.append(
             SendTaskConfig(
-                task_id=str(item.get("task_id", "")),
-                task_name=str(item.get("task_name", "")),
-                enabled=bool(item.get("enabled", True)),
-                account_name=str(item.get("account_name", "")),
-                group_id=str(item.get("group_id", "")),
-                message_mode=str(item.get("message_mode", MESSAGE_MODE_TEXT)),
-                text=str(item.get("text", "")),
-                template_id=str(item.get("template_id", "")),
-                schedule_mode=str(item.get("schedule_mode", SCHEDULE_MODE_MANUAL)),
-                interval_seconds=int(item.get("interval_seconds", 3600)),
-                daily_time=str(item.get("daily_time", "09:00")),
-                random_delay_min=int(item.get("random_delay_min", 0)),
-                random_delay_max=int(item.get("random_delay_max", 0)),
-                last_run_at=str(item.get("last_run_at", "")),
-                next_run_at=str(item.get("next_run_at", "")),
-                remark=str(item.get("remark", "")),
+                task_id=_to_str(item.get("task_id", "")).strip(),
+                task_name=_to_str(item.get("task_name", "")).strip(),
+                enabled=_to_bool(item.get("enabled"), True),
+                account_name=account_name,
+                account_names=account_names,
+                account_rotate_mode=_normalize_rotate_mode(
+                    item.get("account_rotate_mode")
+                ),
+                current_account_index=current_account_index,
+                group_id=_to_str(item.get("group_id", "")).strip(),
+                message_mode=_to_str(item.get("message_mode", MESSAGE_MODE_TEXT)),
+                text=_to_str(item.get("text", "")),
+                template_id=_to_str(item.get("template_id", "")).strip(),
+                schedule_mode=_to_str(
+                    item.get("schedule_mode", SCHEDULE_MODE_MANUAL)
+                ),
+                interval_seconds=_to_int(item.get("interval_seconds"), 3600),
+                daily_time=_to_str(item.get("daily_time", "09:00")).strip() or "09:00",
+                random_delay_min=_to_int(item.get("random_delay_min"), 0),
+                random_delay_max=_to_int(item.get("random_delay_max"), 0),
+                last_run_at=_to_str(item.get("last_run_at", "")).strip(),
+                next_run_at=_to_str(item.get("next_run_at", "")).strip(),
+                remark=_to_str(item.get("remark", "")),
             )
         )
 
@@ -133,25 +278,31 @@ def load_templates(file_path: str) -> list[TemplateConfig]:
 
     templates: list[TemplateConfig] = []
 
-    for item in data:
+    for raw_item in data:
+        item = _as_dict(raw_item)
+
         templates.append(
             TemplateConfig(
-                template_id=str(item.get("template_id", "")),
-                template_name=str(item.get("template_name", "")),
-                source_account_name=str(item.get("source_account_name", "")),
-                source_chat_id=int(item.get("source_chat_id", 0)),
-                source_chat_title=str(item.get("source_chat_title", "")),
-                source_message_ids=[int(x) for x in item.get("source_message_ids", [])],
-                message_type=str(item.get("message_type", TEMPLATE_MESSAGE_TYPE_TEXT)),
-                send_mode=str(item.get("send_mode", TEMPLATE_SEND_MODE_FORWARD)),
-                preview_text=str(item.get("preview_text", "")),
-                raw_text=str(item.get("raw_text", "")),
-                has_custom_emoji=bool(item.get("has_custom_emoji", False)),
-                has_media=bool(item.get("has_media", False)),
-                media_count=int(item.get("media_count", 0)),
-                preview_images=[str(x) for x in item.get("preview_images", [])],
-                enabled=bool(item.get("enabled", True)),
-                created_at=str(item.get("created_at", "")),
+                template_id=_to_str(item.get("template_id", "")).strip(),
+                template_name=_to_str(item.get("template_name", "")).strip(),
+                source_account_name=_to_str(
+                    item.get("source_account_name", "")
+                ).strip(),
+                source_chat_id=_to_int(item.get("source_chat_id"), 0),
+                source_chat_title=_to_str(item.get("source_chat_title", "")),
+                source_message_ids=_to_int_list(item.get("source_message_ids")),
+                message_type=_to_str(
+                    item.get("message_type", TEMPLATE_MESSAGE_TYPE_TEXT)
+                ),
+                send_mode=_to_str(item.get("send_mode", TEMPLATE_SEND_MODE_FORWARD)),
+                preview_text=_to_str(item.get("preview_text", "")),
+                raw_text=_to_str(item.get("raw_text", "")),
+                has_custom_emoji=_to_bool(item.get("has_custom_emoji"), False),
+                has_media=_to_bool(item.get("has_media"), False),
+                media_count=_to_int(item.get("media_count"), 0),
+                preview_images=_to_str_list(item.get("preview_images")),
+                enabled=_to_bool(item.get("enabled"), True),
+                created_at=_to_str(item.get("created_at", "")).strip(),
             )
         )
 
@@ -168,7 +319,27 @@ def load_settings(file_path: str) -> Settings:
     if not isinstance(data, dict):
         raise ValueError("settings.json 必须是对象")
 
-    return Settings.from_dict(data)
+    return Settings.from_dict(
+        {
+            "app_name": _to_str(data.get("app_name", "telegram_user_group_sender_gui")),
+            "log_level": _to_str(data.get("log_level", "INFO")),
+            "log_file": _to_str(data.get("log_file", "logs/app.log")),
+            "sessions_dir": _to_str(data.get("sessions_dir", "")),
+            "scheduler_tick_seconds": _to_float(
+                data.get("scheduler_tick_seconds"), 1.0
+            ),
+            "max_concurrent_tasks": _to_int(data.get("max_concurrent_tasks"), 1),
+            "default_send_interval_seconds": _to_float(
+                data.get("default_send_interval_seconds"), 1.0
+            ),
+            "template_source_account_name": _to_str(
+                data.get("template_source_account_name", "")
+            ).strip(),
+            "template_source_chat_id": _to_int(
+                data.get("template_source_chat_id"), 0
+            ),
+        }
+    )
 
 
 def save_settings(file_path: str, settings: Settings) -> None:

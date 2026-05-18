@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import concurrent.futures
-import os
 import sys
 from pathlib import Path
 
@@ -11,8 +10,8 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QTabWidget,
-    QWidget,
     QVBoxLayout,
+    QWidget,
 )
 
 from app.gui.dialogs.login_dialog import LoginConfirmDialog
@@ -38,17 +37,15 @@ class MainWindow(QMainWindow):
         super().__init__()
 
         self.setWindowTitle("Telegram 用户号群发任务面板")
-        icon_path = Path(__file__).resolve().parents[2] / "app.ico"
 
+        icon_path = Path(resource_path("app.ico"))
         if icon_path.exists():
             self.setWindowIcon(QIcon(str(icon_path)))
+
         self.setFixedSize(1280, 860)
         self.setStyleSheet(APP_QSS)
 
-        data_dir = Path(os.getenv("DATA_DIR", "~/.tg_group_sender")).expanduser()
-        data_dir.mkdir(parents=True, exist_ok=True)
-
-        self.runtime_service = RuntimeService(str(data_dir))
+        self.runtime_service = RuntimeService()
         self.accounts = list(self.runtime_service.accounts)
         self.groups = list(self.runtime_service.groups)
         self.tasks = list(self.runtime_service.tasks)
@@ -62,10 +59,7 @@ class MainWindow(QMainWindow):
         self.group_page = GroupPage()
         self.task_page = TaskPage()
         self.template_page = TemplatePage()
-
-        log_dir = data_dir / "logs"
-        log_dir.mkdir(parents=True, exist_ok=True)
-        self.log_page = LogPage(str(log_dir))
+        self.log_page = LogPage(str(self.runtime_service.get_logs_dir()))
 
         self.tabs = QTabWidget()
         self.tabs.setDocumentMode(False)
@@ -103,9 +97,14 @@ class MainWindow(QMainWindow):
         self.dashboard_page.stop_all_button.clicked.connect(self.on_stop_all_clicked)
 
         if hasattr(self.dashboard_page, "start_scheduler_button"):
-            self.dashboard_page.start_scheduler_button.clicked.connect(self.on_start_scheduler_clicked)
+            self.dashboard_page.start_scheduler_button.clicked.connect(
+                self.on_start_scheduler_clicked
+            )
+
         if hasattr(self.dashboard_page, "stop_scheduler_button"):
-            self.dashboard_page.stop_scheduler_button.clicked.connect(self.on_stop_scheduler_clicked)
+            self.dashboard_page.stop_scheduler_button.clicked.connect(
+                self.on_stop_scheduler_clicked
+            )
 
         self.account_page.add_button.clicked.connect(self.account_page.clear_form)
         self.account_page.save_button.clicked.connect(self.on_save_account_clicked)
@@ -123,37 +122,55 @@ class MainWindow(QMainWindow):
         self.task_page.delete_button.clicked.connect(self.on_delete_task_clicked)
         self.task_page.up_button.clicked.connect(self.on_task_up_clicked)
         self.task_page.down_button.clicked.connect(self.on_task_down_clicked)
-        self.task_page.send_once_button.clicked.connect(self.on_send_task_once_clicked)
+        self.task_page.send_once_button.clicked.connect(
+            self.on_send_task_once_clicked
+        )
 
         self.template_page.add_button.clicked.connect(self.template_page.clear_form)
         self.template_page.save_button.clicked.connect(self.on_save_template_clicked)
-        self.template_page.delete_button.clicked.connect(self.on_delete_template_clicked)
+        self.template_page.delete_button.clicked.connect(
+            self.on_delete_template_clicked
+        )
         self.template_page.refresh_button.clicked.connect(self.on_reload_clicked)
 
         self.runtime_service.log_received.connect(self.on_runtime_log_received)
-        self.runtime_service.account_status_changed.connect(self.on_account_status_changed)
+        self.runtime_service.account_status_changed.connect(
+            self.on_account_status_changed
+        )
         self.runtime_service.runtime_hint.connect(self.on_runtime_hint)
         self.runtime_service.templates_changed.connect(self.on_templates_changed)
-        self.runtime_service.scheduler_status_changed.connect(self.on_scheduler_status_changed)
+        self.runtime_service.scheduler_status_changed.connect(
+            self.on_scheduler_status_changed
+        )
 
-        self.runtime_service.input_provider.code_input_required.connect(self.on_code_input_required)
-        self.runtime_service.input_provider.password_input_required.connect(self.on_password_input_required)
+        self.runtime_service.input_provider.code_input_required.connect(
+            self.on_code_input_required
+        )
+        self.runtime_service.input_provider.password_input_required.connect(
+            self.on_password_input_required
+        )
+
+    def _sync_state_from_runtime(self) -> None:
+        self.accounts = list(self.runtime_service.accounts)
+        self.groups = list(self.runtime_service.groups)
+        self.tasks = list(self.runtime_service.tasks)
+        self.templates = list(self.runtime_service.templates)
+        self.settings = self.runtime_service.settings
+        self.status_map = self.runtime_service.get_status_map()
+        self.scheduler_status = self.runtime_service.get_scheduler_status()
+
+        if hasattr(self, "log_page"):
+            self.log_page.logs_dir = str(self.runtime_service.get_logs_dir())
 
     def refresh_all_views(self) -> None:
-        if hasattr(self.dashboard_page, "update_summary"):
-            try:
-                self.dashboard_page.update_summary(
-                    self.accounts,
-                    self.groups,
-                    self.tasks,
-                    self.settings,
-                    self.scheduler_status,
-                )
-            except TypeError:
-                self.dashboard_page.update_summary(self.accounts, [], self.settings)
-
-        if hasattr(self.dashboard_page, "update_status_table"):
-            self.dashboard_page.update_status_table(self.accounts, self.status_map)
+        self.dashboard_page.update_summary(
+            self.accounts,
+            self.groups,
+            self.tasks,
+            self.settings,
+            self.scheduler_status,
+        )
+        self.dashboard_page.update_status_table(self.accounts, self.status_map)
 
         self.account_page.set_accounts(self.accounts, self.status_map)
         self.group_page.set_groups(self.groups)
@@ -168,31 +185,140 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, "提示", text)
 
     def _sync_settings_from_dashboard(self) -> None:
-        if hasattr(self.dashboard_page, "scheduler_tick_spin"):
-            self.settings.scheduler_tick_seconds = float(self.dashboard_page.scheduler_tick_spin.value())
+        self.settings.scheduler_tick_seconds = float(
+            self.dashboard_page.scheduler_tick_spin.value()
+        )
+        self.settings.max_concurrent_tasks = int(
+            self.dashboard_page.max_concurrent_tasks_spin.value()
+        )
+        self.settings.default_send_interval_seconds = float(
+            self.dashboard_page.default_send_interval_spin.value()
+        )
+        self.settings.template_source_account_name = (
+            self.dashboard_page.template_account_edit.text().strip()
+        )
 
-        if hasattr(self.dashboard_page, "max_concurrent_tasks_spin"):
-            self.settings.max_concurrent_tasks = int(self.dashboard_page.max_concurrent_tasks_spin.value())
+        chat_id_text = self.dashboard_page.template_chat_id_edit.text().strip()
+        if chat_id_text:
+            try:
+                self.settings.template_source_chat_id = int(chat_id_text)
+            except ValueError as exc:
+                raise ValueError("素材群 Chat ID 必须是数字") from exc
+        else:
+            self.settings.template_source_chat_id = 0
 
-        if hasattr(self.dashboard_page, "default_send_interval_spin"):
-            self.settings.default_send_interval_seconds = float(
-                self.dashboard_page.default_send_interval_spin.value()
-            )
+    def _get_selected_account_index(self) -> int:
+        selected_rows = self.account_page.table.selectionModel().selectedRows()
+        if not selected_rows:
+            return -1
+        return selected_rows[0].row()
 
-        if hasattr(self.dashboard_page, "template_account_edit"):
-            self.settings.template_source_account_name = (
-                self.dashboard_page.template_account_edit.text().strip()
-            )
+    def _replace_account_name_in_tasks(
+        self,
+        old_account_name: str,
+        new_account_name: str,
+    ) -> bool:
+        old_value = str(old_account_name or "").strip()
+        new_value = str(new_account_name or "").strip()
 
-        if hasattr(self.dashboard_page, "template_chat_id_edit"):
-            chat_id_text = self.dashboard_page.template_chat_id_edit.text().strip()
-            if chat_id_text:
+        if not old_value or not new_value or old_value == new_value:
+            return False
+
+        changed = False
+
+        for task in self.tasks:
+            account_names = self._task_account_names(task)
+
+            replaced_names: list[str] = []
+            for account_name in account_names:
+                value = new_value if account_name == old_value else account_name
+                if value and value not in replaced_names:
+                    replaced_names.append(value)
+
+            if replaced_names != account_names:
+                task.account_names = replaced_names
+                changed = True
+
+            if task.account_name == old_value:
+                task.account_name = new_value
+                changed = True
+
+        return changed
+
+    def _remove_account_from_tasks(self, account_name: str) -> bool:
+        target_account_name = str(account_name or "").strip()
+        if not target_account_name:
+            return False
+
+        changed = False
+
+        for task in self.tasks:
+            account_names = self._task_account_names(task)
+            filtered_account_names = [
+                value for value in account_names if value != target_account_name
+            ]
+
+            if filtered_account_names != account_names:
+                task.account_names = filtered_account_names
+                changed = True
+
+            if task.account_name == target_account_name:
+                task.account_name = (
+                    filtered_account_names[0] if filtered_account_names else ""
+                )
+                changed = True
+
+            if filtered_account_names:
                 try:
-                    self.settings.template_source_chat_id = int(chat_id_text)
-                except ValueError as exc:
-                    raise ValueError("素材群 Chat ID 必须是数字") from exc
+                    current_index = int(task.current_account_index)
+                except (TypeError, ValueError):
+                    current_index = 0
+
+                if current_index < 0 or current_index >= len(filtered_account_names):
+                    task.current_account_index = 0
+                    changed = True
             else:
-                self.settings.template_source_chat_id = 0
+                if getattr(task, "current_account_index", 0) != 0:
+                    task.current_account_index = 0
+                    changed = True
+
+        return changed
+
+    @staticmethod
+    def _task_account_names(task) -> list[str]:
+        account_names: list[str] = []
+
+        for raw_account_name in getattr(task, "account_names", []) or []:
+            value = str(raw_account_name or "").strip()
+            if value and value not in account_names:
+                account_names.append(value)
+
+        legacy_account_name = str(getattr(task, "account_name", "") or "").strip()
+        if legacy_account_name and legacy_account_name not in account_names:
+            account_names.insert(0, legacy_account_name)
+
+        return account_names
+
+    def _validate_task_accounts(self, task) -> None:
+        account_names = self._task_account_names(task)
+        if not account_names:
+            raise ValueError("请选择至少一个发送账号")
+
+        existing_account_names = {account.account_name for account in self.accounts}
+        missing_account_names = [
+            account_name
+            for account_name in account_names
+            if account_name not in existing_account_names
+        ]
+
+        if missing_account_names:
+            raise ValueError(
+                "发送账号不存在："
+                + "、".join(missing_account_names)
+            )
+
+        task.account_names = account_names
+        task.account_name = task.account_name or account_names[0]
 
     def on_runtime_log_received(self, level: str, message: str) -> None:
         self.log_page.append_log(level, message)
@@ -201,7 +327,12 @@ class MainWindow(QMainWindow):
         self.log_page.append_log("INFO", message)
         self.statusBar().showMessage(message, 5000)
 
-    def on_account_status_changed(self, account_name: str, status: str, detail: str) -> None:
+    def on_account_status_changed(
+        self,
+        account_name: str,
+        status: str,
+        detail: str,
+    ) -> None:
         self.status_map[account_name] = (status, detail)
         self.refresh_all_views()
 
@@ -211,10 +342,8 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"调度器状态：{status}", 3000)
 
     def on_templates_changed(self) -> None:
-        self.templates = list(self.runtime_service.templates)
-        self.task_page.set_context(self.accounts, self.groups, self.templates)
-        self.task_page.set_tasks(self.tasks)
-        self.template_page.set_templates(self.templates)
+        self._sync_state_from_runtime()
+        self.refresh_all_views()
         self.statusBar().showMessage("模板列表已自动刷新", 3000)
 
     def on_templates_sync_timer(self) -> None:
@@ -270,6 +399,8 @@ class MainWindow(QMainWindow):
             self.runtime_service.save_groups(self.groups)
             self.runtime_service.save_tasks(self.tasks)
             self.runtime_service.save_templates(self.templates)
+            self._sync_state_from_runtime()
+            self.refresh_all_views()
             self._show_info("全部配置已保存")
         except Exception as exc:
             self._show_error(f"保存失败：{exc}")
@@ -277,13 +408,7 @@ class MainWindow(QMainWindow):
     def on_reload_clicked(self) -> None:
         try:
             self.runtime_service.reload_config_cache()
-            self.accounts = list(self.runtime_service.accounts)
-            self.groups = list(self.runtime_service.groups)
-            self.tasks = list(self.runtime_service.tasks)
-            self.templates = list(self.runtime_service.templates)
-            self.settings = self.runtime_service.settings
-            self.status_map = self.runtime_service.get_status_map()
-            self.scheduler_status = self.runtime_service.get_scheduler_status()
+            self._sync_state_from_runtime()
             self.refresh_all_views()
             self._show_info("配置已重新加载")
         except Exception as exc:
@@ -325,6 +450,8 @@ class MainWindow(QMainWindow):
 
             if not account.account_name:
                 raise ValueError("账号名称不能为空")
+            if account.api_id <= 0:
+                raise ValueError("API ID 必须是大于 0 的数字")
             if not account.api_hash:
                 raise ValueError("API Hash 不能为空")
             if not account.phone:
@@ -332,40 +459,65 @@ class MainWindow(QMainWindow):
             if not account.session_name:
                 raise ValueError("Session 名称不能为空")
 
-            existing_index = next(
-                (
-                    idx
-                    for idx, item in enumerate(self.accounts)
-                    if item.account_name == account.account_name
-                ),
-                None,
-            )
+            selected_index = self._get_selected_account_index()
+            old_account_name = ""
+
+            if 0 <= selected_index < len(self.accounts):
+                old_account_name = self.accounts[selected_index].account_name
+                existing_index = selected_index
+            else:
+                existing_index = next(
+                    (
+                        idx
+                        for idx, item in enumerate(self.accounts)
+                        if item.account_name == account.account_name
+                    ),
+                    None,
+                )
+
+            for idx, item in enumerate(self.accounts):
+                if idx != existing_index and item.account_name == account.account_name:
+                    raise ValueError("账号名称已存在，不能重复")
 
             if existing_index is None:
                 self.accounts.append(account)
             else:
                 self.accounts[existing_index] = account
 
+            tasks_changed = self._replace_account_name_in_tasks(
+                old_account_name,
+                account.account_name,
+            )
+
             self.runtime_service.save_accounts(self.accounts)
+            if tasks_changed:
+                self.runtime_service.save_tasks(self.tasks)
+
             self.refresh_all_views()
             self._show_info("账号已保存")
         except Exception as exc:
             self._show_error(f"保存账号失败：{exc}")
 
     def on_delete_account_clicked(self) -> None:
-        account_name = self.account_page.get_selected_account_name()
-        if not account_name:
+        selected_index = self._get_selected_account_index()
+
+        if selected_index < 0 or selected_index >= len(self.accounts):
             self._show_error("请先选择一个账号")
             return
 
-        self.accounts = [
-            item for item in self.accounts if item.account_name != account_name
-        ]
+        account_name = self.accounts[selected_index].account_name
+        self.accounts.pop(selected_index)
+
+        tasks_changed = self._remove_account_from_tasks(account_name)
+
         self.runtime_service.save_accounts(self.accounts)
+        if tasks_changed:
+            self.runtime_service.save_tasks(self.tasks)
+
         self.status_map.pop(account_name, None)
         self.account_page.clear_form()
         self.refresh_all_views()
-        self._show_info("账号已删除")
+        self._show_info("账号已删除，相关任务的账号池已同步更新")
 
     def on_login_account_clicked(self) -> None:
         account_name = self.account_page.get_selected_account_name()
@@ -407,6 +559,8 @@ class MainWindow(QMainWindow):
 
             if not group.group_name:
                 raise ValueError("群组名称不能为空")
+            if not group.chat_id:
+                raise ValueError("Chat ID 不能为空")
 
             existing_index = next(
                 (
@@ -453,8 +607,9 @@ class MainWindow(QMainWindow):
 
             if not task.task_name:
                 raise ValueError("任务名称不能为空")
-            if not task.account_name:
-                raise ValueError("请选择发送账号")
+
+            self._validate_task_accounts(task)
+
             if not task.group_id:
                 raise ValueError("请选择目标群组")
 

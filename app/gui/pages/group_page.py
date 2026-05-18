@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
@@ -37,18 +38,29 @@ class GroupPage(QWidget):
 
         self.groups: list[GroupConfig] = []
 
-        self.table = QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(["启用", "群组名称", "Chat ID", "Username/链接", "备注"])
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.table = QTableWidget(0, 6)
+        self.table.setHorizontalHeaderLabels(
+            ["启用", "群组名称", "Chat ID", "Username/链接", "备注", "Group ID"]
+        )
+        self.table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Stretch
+        )
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         style_table(self.table)
 
         self.name_edit = QLineEdit()
+        self.name_edit.setPlaceholderText("例如：目标群 A")
+
         self.chat_id_edit = QLineEdit()
+        self.chat_id_edit.setPlaceholderText("例如：-1001234567890")
+
         self.username_edit = QLineEdit()
+        self.username_edit.setPlaceholderText("例如：@username 或 https://t.me/xxx")
+
         self.remark_edit = QPlainTextEdit()
+        self.remark_edit.setPlaceholderText("可选，用于记录这个群的用途")
         style_text_editor(self.remark_edit, 170)
 
         self.enabled_check = QCheckBox("启用")
@@ -82,6 +94,7 @@ class GroupPage(QWidget):
 
         table_group = QGroupBox("目标群列表")
         style_group_box(table_group)
+
         table_layout = QVBoxLayout(table_group)
         table_layout.setContentsMargins(18, 20, 18, 18)
         table_layout.addWidget(self.table)
@@ -116,7 +129,10 @@ class GroupPage(QWidget):
         self.table.itemSelectionChanged.connect(self.on_selection_changed)
 
     def set_groups(self, groups: list[GroupConfig]) -> None:
-        self.groups = list(groups)
+        self.groups = list(groups or [])
+        self.refresh_table()
+
+    def refresh_table(self) -> None:
         self.table.setRowCount(0)
 
         for group in self.groups:
@@ -127,40 +143,42 @@ class GroupPage(QWidget):
             enabled_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
 
             self.table.setItem(row, 0, enabled_item)
-            self.table.setItem(row, 1, QTableWidgetItem(group.group_name))
-            self.table.setItem(row, 2, QTableWidgetItem(str(group.chat_id)))
-            self.table.setItem(row, 3, QTableWidgetItem(group.username))
-            self.table.setItem(row, 4, QTableWidgetItem(group.remark))
+            self.table.setItem(row, 1, QTableWidgetItem(str(group.group_name or "")))
+            self.table.setItem(row, 2, QTableWidgetItem(str(group.chat_id or "")))
+            self.table.setItem(row, 3, QTableWidgetItem(str(group.username or "")))
+            self.table.setItem(row, 4, QTableWidgetItem(str(group.remark or "")))
+            self.table.setItem(row, 5, QTableWidgetItem(str(group.group_id or "")))
 
     def get_selected_row(self) -> int:
         selected_rows = self.table.selectionModel().selectedRows()
+
         if not selected_rows:
             return -1
+
         return selected_rows[0].row()
 
     def get_form_group(self) -> GroupConfig:
         row = self.get_selected_row()
 
         if 0 <= row < len(self.groups):
-            group_id = self.groups[row].group_id
+            group_id = str(self.groups[row].group_id or "").strip()
         else:
+            group_id = ""
+
+        if not group_id:
             group_id = uuid.uuid4().hex
 
-        chat_id_text = self.chat_id_edit.text().strip()
-        if not chat_id_text:
-            raise ValueError("Chat ID 不能为空")
-
-        try:
-            chat_id = int(chat_id_text)
-        except ValueError as exc:
-            raise ValueError("Chat ID 必须是数字") from exc
+        group_name = self.name_edit.text().strip()
+        chat_id = self._parse_chat_id(self.chat_id_edit.text())
+        username = self._normalize_username(self.username_edit.text())
+        remark = self.remark_edit.toPlainText().strip()
 
         return GroupConfig(
             group_id=group_id,
-            group_name=self.name_edit.text().strip(),
+            group_name=group_name,
             chat_id=chat_id,
-            username=self.username_edit.text().strip(),
-            remark=self.remark_edit.toPlainText().strip(),
+            username=username,
+            remark=remark,
             enabled=self.enabled_check.isChecked(),
         )
 
@@ -174,12 +192,55 @@ class GroupPage(QWidget):
 
     def on_selection_changed(self) -> None:
         row = self.get_selected_row()
+
         if row < 0 or row >= len(self.groups):
             return
 
         group = self.groups[row]
-        self.name_edit.setText(group.group_name)
-        self.chat_id_edit.setText(str(group.chat_id))
-        self.username_edit.setText(group.username)
-        self.remark_edit.setPlainText(group.remark)
-        self.enabled_check.setChecked(group.enabled)
+
+        self.name_edit.setText(str(group.group_name or ""))
+        self.chat_id_edit.setText(str(group.chat_id or ""))
+        self.username_edit.setText(str(group.username or ""))
+        self.remark_edit.setPlainText(str(group.remark or ""))
+        self.enabled_check.setChecked(bool(group.enabled))
+
+    @staticmethod
+    def _parse_chat_id(value: Any) -> int:
+        raw_text = str(value or "").strip()
+
+        if not raw_text:
+            raise ValueError("Chat ID 不能为空")
+
+        try:
+            chat_id = int(raw_text)
+        except ValueError as exc:
+            raise ValueError("Chat ID 必须是数字") from exc
+
+        if chat_id == 0:
+            raise ValueError("Chat ID 不能为 0")
+
+        return chat_id
+
+    @staticmethod
+    def _normalize_username(value: Any) -> str:
+        raw_text = str(value or "").strip()
+
+        if not raw_text:
+            return ""
+
+        if raw_text.startswith("https://t.me/"):
+            return raw_text
+
+        if raw_text.startswith("http://t.me/"):
+            return raw_text.replace("http://t.me/", "https://t.me/", 1)
+
+        if raw_text.startswith("t.me/"):
+            return "https://" + raw_text
+
+        if raw_text.startswith("@"):
+            return raw_text
+
+        if "/" not in raw_text and " " not in raw_text:
+            return "@" + raw_text
+
+        return raw_text

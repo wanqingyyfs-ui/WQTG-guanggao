@@ -43,9 +43,7 @@ class TelegramClientManager:
         template_collector=None,
         **_: object,
     ):
-        self.accounts: dict[str, AccountConfig] = {
-            item.account_name: item for item in accounts
-        }
+        self.accounts: dict[str, AccountConfig] = self._build_accounts_map(accounts)
         self.settings = settings
         self.logger = logger
         self.log_callback = log_callback
@@ -53,7 +51,19 @@ class TelegramClientManager:
         self.template_collector = template_collector
 
         self.clients: dict[str, TelegramClient] = {}
+        self.client_keys: dict[str, tuple[str, int, str]] = {}
         self.template_handler_callbacks: dict[str, object] = {}
+
+    @staticmethod
+    def _build_accounts_map(accounts: list[AccountConfig]) -> dict[str, AccountConfig]:
+        result: dict[str, AccountConfig] = {}
+
+        for account in accounts:
+            account_name = str(account.account_name or "").strip()
+            if account_name:
+                result[account_name] = account
+
+        return result
 
     def update_configuration(
         self,
@@ -61,47 +71,81 @@ class TelegramClientManager:
         settings: Settings,
         **_: object,
     ) -> None:
-        self.accounts = {item.account_name: item for item in accounts}
+        self.accounts = self._build_accounts_map(accounts)
         self.settings = settings
 
         if self.template_collector is not None:
             self.template_collector.settings = settings
 
     def _emit_log(self, level: str, message: str) -> None:
-        log_method = getattr(self.logger, level.lower(), self.logger.info)
-        log_method(message)
+        safe_level = str(level or "info").lower()
+        safe_message = str(message or "")
 
         if callable(self.log_callback):
-            self.log_callback(level.upper(), message)
+            self.log_callback(safe_level.upper(), safe_message)
+            return
+
+        if self.logger is not None:
+            log_method = getattr(self.logger, safe_level, self.logger.info)
+            log_method(safe_message)
 
     def _emit_status(self, account_name: str, status: str, detail: str = "") -> None:
         if callable(self.status_callback):
-            self.status_callback(account_name, status, detail)
+            self.status_callback(str(account_name or ""), str(status or ""), str(detail or ""))
 
     def _build_session_path(self, session_name: str) -> str:
-        base_dir_text = self.settings.sessions_dir.strip()
+        safe_session_name = str(session_name or "").strip()
+        if not safe_session_name:
+            raise RuntimeError("Session 名称不能为空")
+
+        base_dir_text = str(self.settings.sessions_dir or "").strip()
         if base_dir_text:
             base_dir = Path(base_dir_text).expanduser()
         else:
-            base_dir = Path("sessions")
+            base_dir = Path("sessions").expanduser()
 
         base_dir.mkdir(parents=True, exist_ok=True)
-        return str(base_dir / session_name)
+        return str(base_dir / safe_session_name)
+
+    def _build_client_key(self, account: AccountConfig) -> tuple[str, int, str]:
+        return (
+            self._build_session_path(account.session_name),
+            int(account.api_id),
+            str(account.api_hash or ""),
+        )
 
     def _get_account_or_raise(self, account_name: str) -> AccountConfig:
-        account = self.accounts.get(account_name)
+        safe_account_name = str(account_name or "").strip()
+        account = self.accounts.get(safe_account_name)
+
         if account is None:
-            raise RuntimeError(f"账号不存在: {account_name}")
+            raise RuntimeError(f"账号不存在: {safe_account_name}")
+
         return account
 
     async def _get_or_create_client(self, account: AccountConfig) -> TelegramClient:
-        client = self.clients.get(account.account_name)
-        if client is not None:
-            return client
+        account_name = str(account.account_name or "").strip()
+        client_key = self._build_client_key(account)
 
-        session_path = self._build_session_path(account.session_name)
-        client = TelegramClient(session_path, account.api_id, account.api_hash)
-        self.clients[account.account_name] = client
+        existing_client = self.clients.get(account_name)
+        existing_key = self.client_keys.get(account_name)
+
+        if existing_client is not None and existing_key == client_key:
+            return existing_client
+
+        if existing_client is not None:
+            self._emit_log(
+                "warning",
+                f"[{account_name}] 账号配置已变化，正在重建 TelegramClient",
+            )
+            await self._disconnect_client(account_name, emit_status=False)
+
+        session_path, api_id, api_hash = client_key
+        client = TelegramClient(session_path, api_id, api_hash)
+
+        self.clients[account_name] = client
+        self.client_keys[account_name] = client_key
+
         return client
 
     async def _interactive_login(
@@ -162,6 +206,18 @@ class TelegramClientManager:
             self._emit_status(account.account_name, "error", "验证码为空")
             raise RuntimeError("验证码为空") from exc
 
+    def _remove_template_handler(self, account_name: str, client: TelegramClient) -> None:
+        callback = self.template_handler_callbacks.pop(account_name, None)
+
+        if callback is not None:
+            try:
+                client.remove_event_handler(callback)
+            except Exception as exc:
+                self._emit_log(
+                    "warning",
+                    f"[{account_name}] 移除模板采集事件失败: {exc}",
+                )
+
     def _register_template_handler(self, account_name: str, client: TelegramClient) -> None:
         if self.template_collector is None:
             return
@@ -170,11 +226,17 @@ class TelegramClientManager:
             return
 
         async def on_template_message(event):
-            await self.template_collector.handle(
-                account_name=account_name,
-                client=client,
-                event=event,
-            )
+            try:
+                await self.template_collector.handle(
+                    account_name=account_name,
+                    client=client,
+                    event=event,
+                )
+            except Exception as exc:
+                self._emit_log(
+                    "error",
+                    f"[{account_name}] 模板采集事件处理失败: {exc}",
+                )
 
         client.add_event_handler(on_template_message, events.NewMessage())
         self.template_handler_callbacks[account_name] = on_template_message
@@ -184,10 +246,11 @@ class TelegramClientManager:
         return bool(client and client.is_connected())
 
     def get_running_client(self, account_name: str) -> TelegramClient:
-        client = self.clients.get(account_name)
+        safe_account_name = str(account_name or "").strip()
+        client = self.clients.get(safe_account_name)
 
         if client is None or not client.is_connected():
-            raise RuntimeError(f"账号未启动: {account_name}")
+            raise RuntimeError(f"账号未启动: {safe_account_name}")
 
         return client
 
@@ -196,10 +259,25 @@ class TelegramClientManager:
         account_name: str,
         input_provider: LoginInputProvider | None = None,
     ) -> TelegramClient:
-        if not self.is_account_running(account_name):
-            await self.start_account(account_name, input_provider=input_provider)
+        account = self._get_account_or_raise(account_name)
+        client = await self._get_or_create_client(account)
 
-        return self.get_running_client(account_name)
+        if client.is_connected():
+            if await client.is_user_authorized():
+                self._register_template_handler(account.account_name, client)
+                return client
+
+            if input_provider is None:
+                self._emit_status(account.account_name, "error", "账号未登录")
+                raise RuntimeError(f"账号未登录，请先在界面登录账号: {account.account_name}")
+
+        await self.start_account(
+            account.account_name,
+            input_provider=input_provider,
+            allow_interactive_login=input_provider is not None,
+        )
+
+        return self.get_running_client(account.account_name)
 
     async def login_account(
         self,
@@ -210,7 +288,11 @@ class TelegramClientManager:
         client = await self._get_or_create_client(account)
 
         try:
-            await self._interactive_login(client, account, input_provider=input_provider)
+            await self._interactive_login(
+                client,
+                account,
+                input_provider=input_provider,
+            )
         except Exception as exc:
             self._emit_log("error", f"[{account.account_name}] 登录失败: {exc}")
             raise
@@ -219,14 +301,20 @@ class TelegramClientManager:
         self,
         account_name: str,
         input_provider: LoginInputProvider | None = None,
+        allow_interactive_login: bool = True,
     ) -> None:
         account = self._get_account_or_raise(account_name)
         client = await self._get_or_create_client(account)
 
         try:
+            self._emit_status(account.account_name, "starting", "启动中")
             await client.connect()
 
             if not await client.is_user_authorized():
+                if not allow_interactive_login:
+                    self._emit_status(account.account_name, "error", "账号未登录")
+                    raise RuntimeError(f"账号未登录，请先在界面登录账号: {account.account_name}")
+
                 await self._interactive_login(
                     client,
                     account,
@@ -242,30 +330,44 @@ class TelegramClientManager:
             self._emit_log("error", f"[{account.account_name}] 启动失败: {exc}")
             raise
 
-    async def stop_account(self, account_name: str) -> None:
-        client = self.clients.get(account_name)
+    async def _disconnect_client(
+        self,
+        account_name: str,
+        emit_status: bool = True,
+    ) -> None:
+        safe_account_name = str(account_name or "").strip()
+        client = self.clients.get(safe_account_name)
 
         if client is None:
-            self._emit_status(account_name, "stopped", "未启动")
+            if emit_status:
+                self._emit_status(safe_account_name, "stopped", "未启动")
             return
 
+        self._remove_template_handler(safe_account_name, client)
+
         try:
-            template_callback = self.template_handler_callbacks.pop(account_name, None)
-            if template_callback is not None:
-                client.remove_event_handler(template_callback)
+            if client.is_connected():
+                await client.disconnect()
+        finally:
+            self.clients.pop(safe_account_name, None)
+            self.client_keys.pop(safe_account_name, None)
 
-            await client.disconnect()
-            self.clients.pop(account_name, None)
+        if emit_status:
+            self._emit_status(safe_account_name, "stopped", "已停止")
 
-            self._emit_status(account_name, "stopped", "已停止")
-            self._emit_log("info", f"[{account_name}] 客户端已停止")
+    async def stop_account(self, account_name: str) -> None:
+        safe_account_name = str(account_name or "").strip()
+
+        try:
+            await self._disconnect_client(safe_account_name, emit_status=True)
+            self._emit_log("info", f"[{safe_account_name}] 客户端已停止")
         except Exception as exc:
-            self._emit_status(account_name, "error", str(exc))
-            self._emit_log("error", f"[{account_name}] 停止失败: {exc}")
+            self._emit_status(safe_account_name, "error", str(exc))
+            self._emit_log("error", f"[{safe_account_name}] 停止失败: {exc}")
             raise
 
     async def start_all(self, input_provider: LoginInputProvider | None = None) -> None:
-        for account in self.accounts.values():
+        for account in list(self.accounts.values()):
             if not account.enabled:
                 self._emit_status(account.account_name, "disabled", "未启用")
                 continue
@@ -274,8 +376,13 @@ class TelegramClientManager:
                 await self.start_account(
                     account.account_name,
                     input_provider=input_provider,
+                    allow_interactive_login=input_provider is not None,
                 )
-            except Exception:
+            except Exception as exc:
+                self._emit_log(
+                    "error",
+                    f"[{account.account_name}] 批量启动跳过: {exc}",
+                )
                 continue
 
     async def stop_all(self) -> None:

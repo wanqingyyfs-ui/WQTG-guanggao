@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -34,29 +36,32 @@ class AccountPage(QWidget):
         self.accounts: list[AccountConfig] = []
         self.status_map: dict[str, tuple[str, str]] = {}
 
-        self.table = QTableWidget(0, 5)
+        self.table = QTableWidget(0, 7)
         self.table.setHorizontalHeaderLabels(
-            ["账号名", "手机号", "启用", "状态", "详情"]
+            ["账号名", "手机号", "API ID", "Session", "启用", "状态", "详情"]
         )
         self.table.horizontalHeader().setSectionResizeMode(
             QHeaderView.ResizeMode.Stretch
         )
-        self.table.setSelectionBehavior(
-            QTableWidget.SelectionBehavior.SelectRows
-        )
-        self.table.setSelectionMode(
-            QTableWidget.SelectionMode.SingleSelection
-        )
-        self.table.setEditTriggers(
-            QTableWidget.EditTrigger.NoEditTriggers
-        )
+        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         style_table(self.table)
 
         self.account_name_edit = QLineEdit()
+        self.account_name_edit.setPlaceholderText("例如：account_01")
+
         self.api_id_edit = QLineEdit()
+        self.api_id_edit.setPlaceholderText("Telegram API ID，只能填写数字")
+
         self.api_hash_edit = QLineEdit()
+        self.api_hash_edit.setPlaceholderText("Telegram API Hash")
+
         self.phone_edit = QLineEdit()
+        self.phone_edit.setPlaceholderText("例如：+8613800000000")
+
         self.session_name_edit = QLineEdit()
+        self.session_name_edit.setPlaceholderText("例如：account_01")
 
         self.enabled_checkbox = QCheckBox("启用此账号")
         self.enabled_checkbox.setChecked(True)
@@ -66,7 +71,6 @@ class AccountPage(QWidget):
 
         form_layout = QFormLayout(form_group)
         style_form_layout(form_layout)
-
         form_layout.addRow("账号名称", self.account_name_edit)
         form_layout.addRow("API ID", self.api_id_edit)
         form_layout.addRow("API Hash", self.api_hash_edit)
@@ -87,13 +91,10 @@ class AccountPage(QWidget):
         button_layout = QHBoxLayout(button_bar)
         button_layout.setContentsMargins(12, 12, 12, 12)
         button_layout.setSpacing(14)
-
         button_layout.addWidget(self.add_button)
         button_layout.addWidget(self.save_button)
         button_layout.addWidget(self.delete_button)
-
         button_layout.addStretch(1)
-
         button_layout.addWidget(self.login_button)
         button_layout.addWidget(self.start_button)
         button_layout.addWidget(self.stop_button)
@@ -138,17 +139,15 @@ class AccountPage(QWidget):
         layout.setSpacing(0)
         layout.addWidget(splitter)
 
-        self.table.itemSelectionChanged.connect(
-            self.load_selected_account
-        )
+        self.table.itemSelectionChanged.connect(self.load_selected_account)
 
     def set_accounts(
         self,
         accounts: list[AccountConfig],
         status_map: dict[str, tuple[str, str]],
     ) -> None:
-        self.accounts = list(accounts)
-        self.status_map = dict(status_map)
+        self.accounts = list(accounts or [])
+        self.status_map = dict(status_map or {})
         self.refresh_table()
 
     def refresh_table(self) -> None:
@@ -157,53 +156,34 @@ class AccountPage(QWidget):
         for row, account in enumerate(self.accounts):
             status, detail = self.status_map.get(
                 account.account_name,
-                ("idle", "未启动"),
+                ("stopped", "未启动"),
             )
 
-            self.table.setItem(
-                row,
-                0,
-                QTableWidgetItem(account.account_name),
-            )
+            enabled_item = QTableWidgetItem("是" if account.enabled else "否")
+            enabled_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
 
-            self.table.setItem(
-                row,
-                1,
-                QTableWidgetItem(account.phone),
-            )
-
-            self.table.setItem(
-                row,
-                2,
-                QTableWidgetItem("是" if account.enabled else "否"),
-            )
-
-            self.table.setItem(
-                row,
-                3,
-                QTableWidgetItem(status),
-            )
-
-            self.table.setItem(
-                row,
-                4,
-                QTableWidgetItem(detail),
-            )
+            self.table.setItem(row, 0, QTableWidgetItem(str(account.account_name)))
+            self.table.setItem(row, 1, QTableWidgetItem(str(account.phone)))
+            self.table.setItem(row, 2, QTableWidgetItem(str(account.api_id)))
+            self.table.setItem(row, 3, QTableWidgetItem(str(account.session_name)))
+            self.table.setItem(row, 4, enabled_item)
+            self.table.setItem(row, 5, QTableWidgetItem(self._status_label(status)))
+            self.table.setItem(row, 6, QTableWidgetItem(str(detail or "")))
 
     def load_selected_account(self) -> None:
-        row = self.table.currentRow()
+        row = self.get_selected_row()
 
         if row < 0 or row >= len(self.accounts):
             return
 
         account = self.accounts[row]
 
-        self.account_name_edit.setText(account.account_name)
+        self.account_name_edit.setText(str(account.account_name))
         self.api_id_edit.setText(str(account.api_id))
-        self.api_hash_edit.setText(account.api_hash)
-        self.phone_edit.setText(account.phone)
-        self.session_name_edit.setText(account.session_name)
-        self.enabled_checkbox.setChecked(account.enabled)
+        self.api_hash_edit.setText(str(account.api_hash))
+        self.phone_edit.setText(str(account.phone))
+        self.session_name_edit.setText(str(account.session_name))
+        self.enabled_checkbox.setChecked(bool(account.enabled))
 
     def clear_form(self) -> None:
         self.table.clearSelection()
@@ -216,25 +196,72 @@ class AccountPage(QWidget):
 
         self.enabled_checkbox.setChecked(True)
 
+    def get_selected_row(self) -> int:
+        selected_rows = self.table.selectionModel().selectedRows()
+
+        if not selected_rows:
+            return -1
+
+        return selected_rows[0].row()
+
     def get_form_account(self) -> AccountConfig:
-        api_id_text = self.api_id_edit.text().strip()
+        account_name = self.account_name_edit.text().strip()
+        api_id = self._parse_api_id(self.api_id_edit.text())
+        api_hash = self.api_hash_edit.text().strip()
+        phone = self.phone_edit.text().strip()
+        session_name = self.session_name_edit.text().strip()
 
-        if not api_id_text:
-            raise ValueError("API ID 不能为空")
-
-        try:
-            api_id = int(api_id_text)
-        except ValueError as exc:
-            raise ValueError("API ID 必须是数字") from exc
+        if not session_name and account_name:
+            session_name = account_name
 
         return AccountConfig(
-            account_name=self.account_name_edit.text().strip(),
+            account_name=account_name,
             api_id=api_id,
-            api_hash=self.api_hash_edit.text().strip(),
-            phone=self.phone_edit.text().strip(),
-            session_name=self.session_name_edit.text().strip(),
+            api_hash=api_hash,
+            phone=phone,
+            session_name=session_name,
             enabled=self.enabled_checkbox.isChecked(),
         )
 
     def get_selected_account_name(self) -> str:
+        row = self.get_selected_row()
+
+        if 0 <= row < len(self.accounts):
+            return str(self.accounts[row].account_name or "").strip()
+
         return self.account_name_edit.text().strip()
+
+    @staticmethod
+    def _parse_api_id(value: Any) -> int:
+        raw_text = str(value or "").strip()
+
+        if not raw_text:
+            raise ValueError("API ID 不能为空")
+
+        try:
+            api_id = int(raw_text)
+        except ValueError as exc:
+            raise ValueError("API ID 必须是数字") from exc
+
+        if api_id <= 0:
+            raise ValueError("API ID 必须是大于 0 的数字")
+
+        return api_id
+
+    @staticmethod
+    def _status_label(status: str) -> str:
+        normalized = str(status or "").strip()
+
+        status_map = {
+            "idle": "空闲",
+            "starting": "启动中",
+            "running": "运行中",
+            "logged_in": "已登录",
+            "logging_in": "登录中",
+            "stopped": "已停止",
+            "disabled": "未启用",
+            "error": "错误",
+            "online": "在线",
+        }
+
+        return status_map.get(normalized, normalized or "未知")

@@ -24,28 +24,54 @@ from app.core.models import (
 )
 
 
-def get_appdata_base_dir(app_name: str = "万青TG群发任务") -> Path:
+APP_NAME = "万青TG群发任务"
+
+
+def get_appdata_base_dir(app_name: str = APP_NAME) -> Path:
     local_appdata = os.environ.get("LOCALAPPDATA")
+
     if local_appdata:
-        return Path(local_appdata) / app_name
+        return Path(local_appdata).expanduser() / app_name
+
     return Path.home() / "AppData" / "Local" / app_name
 
 
+def resolve_base_dir(base_dir: str | Path | None = None) -> Path:
+    """
+    默认使用 Windows 用户级 AppData 目录。
+
+    兼容旧调用：
+    - RuntimeService() 默认传入 "."
+    - 旧 ConfigService(base_dir=".") 过去实际也是使用 AppData
+    所以这里把 None、空字符串、"." 都解析为 AppData，避免升级后数据目录突然变到项目根目录。
+    """
+    if base_dir is None:
+        return get_appdata_base_dir()
+
+    base_dir_text = str(base_dir).strip()
+
+    if not base_dir_text or base_dir_text == ".":
+        return get_appdata_base_dir()
+
+    return Path(base_dir_text).expanduser()
+
+
 class ConfigService:
-    def __init__(self, base_dir: str = "."):
-        self.base_dir = get_appdata_base_dir()
+    def __init__(self, base_dir: str | Path | None = None):
+        self.app_name = APP_NAME
+        self.base_dir = resolve_base_dir(base_dir)
+
         self.config_dir = self.base_dir / "config"
         self.logs_dir = self.base_dir / "logs"
         self.sessions_dir = self.base_dir / "sessions"
         self.data_dir = self.base_dir / "data"
+        self.template_cache_dir = self.data_dir / "template_cache"
 
         self.accounts_path = self.config_dir / "accounts.json"
         self.groups_path = self.config_dir / "groups.json"
         self.tasks_path = self.config_dir / "tasks.json"
         self.templates_path = self.config_dir / "templates.json"
         self.settings_path = self.config_dir / "settings.json"
-        self.template_cache_dir = self.data_dir / "template_cache"
-        self.app_name = "万青TG群发任务"
 
         self._ensure_structure()
 
@@ -69,7 +95,10 @@ class ConfigService:
             save_templates(str(self.templates_path), [])
 
         if not self.settings_path.exists():
-            save_settings(str(self.settings_path), Settings())
+            settings = Settings()
+            settings.log_file = str(self.logs_dir / "app.log")
+            settings.sessions_dir = str(self.sessions_dir)
+            save_settings(str(self.settings_path), settings)
 
     def load_all(
         self,
@@ -85,6 +114,7 @@ class ConfigService:
         tasks = load_tasks(str(self.tasks_path))
         templates = load_templates(str(self.templates_path))
         settings = load_settings(str(self.settings_path))
+
         return accounts, groups, tasks, templates, settings
 
     def save_accounts(self, accounts: list[AccountConfig]) -> None:
@@ -100,4 +130,6 @@ class ConfigService:
         save_templates(str(self.templates_path), templates)
 
     def save_settings(self, settings: Settings) -> None:
+        settings.log_file = str(self.logs_dir / "app.log")
+        settings.sessions_dir = str(self.sessions_dir)
         save_settings(str(self.settings_path), settings)

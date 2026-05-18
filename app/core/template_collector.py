@@ -9,155 +9,368 @@ from telethon import utils as telethon_utils
 from app.services.template_store_service import TemplateStoreService
 
 
+AlbumKey = tuple[str, int, int]
+
+
 class TemplateCollector:
     def __init__(self, settings, store: TemplateStoreService, log_func):
         self.settings = settings
         self.store = store
         self.log = log_func
 
-        # grouped_id -> list[Message]
-        self.album_cache: dict[int, list[Any]] = defaultdict(list)
-        # grouped_id -> asyncio.Task
-        self.album_tasks: dict[int, asyncio.Task] = {}
+        self.album_cache: dict[AlbumKey, list[Any]] = defaultdict(list)
+        self.album_tasks: dict[AlbumKey, asyncio.Task] = {}
 
     def _log(self, level: str, msg: str) -> None:
         if callable(self.log):
-            self.log(level, msg)
+            self.log(str(level or "INFO").upper(), str(msg or ""))
+
+    @staticmethod
+    def _safe_int(value, default: int = 0) -> int:
+        try:
+            if value is None or value == "":
+                return default
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _message_id(message) -> int:
+        return TemplateCollector._safe_int(getattr(message, "id", 0), 0)
+
+    @staticmethod
+    def _extract_message_text(message) -> str:
+        raw_text = getattr(message, "message", None)
+
+        if raw_text is None:
+            raw_text = getattr(message, "text", "")
+
+        return str(raw_text or "").strip()
+
+    @staticmethod
+    def _has_media(message) -> bool:
+        return bool(getattr(message, "media", None))
+
+    @staticmethod
+    def _chat_title(chat) -> str:
+        title = str(getattr(chat, "title", "") or "").strip()
+        if title:
+            return title
+
+        username = str(getattr(chat, "username", "") or "").strip()
+        if username:
+            return username
+
+        return str(getattr(chat, "id", "") or "").strip()
+
+    @staticmethod
+    def _marked_chat_id(chat) -> int:
+        return int(telethon_utils.get_peer_id(chat))
+
+    def _expected_account_name(self) -> str:
+        return str(
+            getattr(self.settings, "template_source_account_name", "") or ""
+        ).strip()
+
+    def _expected_chat_id(self) -> int:
+        return self._safe_int(
+            getattr(self.settings, "template_source_chat_id", 0),
+            0,
+        )
+
+    def _is_expected_account(self, account_name: str) -> bool:
+        expected_account = self._expected_account_name()
+
+        if not expected_account:
+            return True
+
+        return str(account_name or "").strip() == expected_account
+
+    async def _get_expected_chat_context(self, event) -> tuple[Any, int] | None:
+        expected_chat_id = self._expected_chat_id()
+
+        if not expected_chat_id:
+            return None
+
+        chat = await event.get_chat()
+        if chat is None:
+            return None
+
+        marked_chat_id = self._marked_chat_id(chat)
+
+        if marked_chat_id != expected_chat_id:
+            return None
+
+        return chat, marked_chat_id
+
+    def _should_skip_message(self, message) -> bool:
+        if message is None:
+            return True
+
+        message_id = self._message_id(message)
+        if message_id <= 0:
+            return True
+
+        text = self._extract_message_text(message)
+        has_media = self._has_media(message)
+
+        return not text and not has_media
 
     async def handle(self, account_name: str, client, event) -> None:
         """
         只采集：
-        1) 指定监听账号
-        2) 指定素材群
-        3) 新消息（包含自己发的消息）
+        1. 指定监听账号
+        2. 指定素材群
+        3. 有文本或媒体的新消息
+        4. 包含自己发出的消息
         """
+        safe_account_name = str(account_name or "").strip()
+
         try:
-            # 先按“监听账号名”过滤
-            expected_account = (self.settings.template_source_account_name or "").strip()
-            if expected_account and account_name != expected_account:
+            if not self._is_expected_account(safe_account_name):
                 return
 
-            chat = await event.get_chat()
-            if chat is None:
+            chat_context = await self._get_expected_chat_context(event)
+            if chat_context is None:
                 return
 
-            # Telethon 中超级群/频道应使用 get_peer_id 获取带 -100 的 marked id
-            marked_chat_id = telethon_utils.get_peer_id(chat)
-            expected_chat_id = int(self.settings.template_source_chat_id or 0)
+            chat, marked_chat_id = chat_context
+            message = getattr(event, "message", None)
 
-            if not expected_chat_id:
+            if self._should_skip_message(message):
                 return
 
-            if marked_chat_id != expected_chat_id:
-                return
-
-            message = event.message
-            if message is None:
-                return
+            message_id = self._message_id(message)
 
             self._log(
                 "info",
-                f"[模板采集] 命中素材群消息 | account={account_name} | "
-                f"chat_id={marked_chat_id} | message_id={message.id}"
+                f"[模板采集] 命中素材群消息 | "
+                f"account={safe_account_name} | "
+                f"chat_id={marked_chat_id} | "
+                f"message_id={message_id}",
             )
 
-            grouped_id = getattr(message, "grouped_id", None)
+            grouped_id = self._safe_int(getattr(message, "grouped_id", 0), 0)
 
-            # 相册消息：延迟聚合
             if grouped_id:
-                self.album_cache[grouped_id].append(message)
-
-                old_task = self.album_tasks.get(grouped_id)
-                if old_task and not old_task.done():
-                    old_task.cancel()
-
-                self.album_tasks[grouped_id] = asyncio.create_task(
-                    self._delayed_flush_album(
-                        account_name=account_name,
-                        chat=chat,
-                        grouped_id=grouped_id,
-                        delay=1.2,
-                    )
+                self._queue_album_message(
+                    account_name=safe_account_name,
+                    chat=chat,
+                    marked_chat_id=marked_chat_id,
+                    grouped_id=grouped_id,
+                    message=message,
                 )
                 return
 
-            # 单条消息
-            await self._save_single(account_name, chat, message)
+            await self._save_single(
+                account_name=safe_account_name,
+                chat=chat,
+                marked_chat_id=marked_chat_id,
+                message=message,
+            )
 
         except Exception as exc:
             self._log("error", f"[模板采集] 处理素材群消息失败: {exc}")
 
-    async def _delayed_flush_album(self, account_name: str, chat, grouped_id: int, delay: float) -> None:
+    def _queue_album_message(
+        self,
+        account_name: str,
+        chat,
+        marked_chat_id: int,
+        grouped_id: int,
+        message,
+    ) -> None:
+        album_key: AlbumKey = (account_name, marked_chat_id, grouped_id)
+        message_id = self._message_id(message)
+
+        cached_messages = self.album_cache[album_key]
+
+        if not any(self._message_id(item) == message_id for item in cached_messages):
+            cached_messages.append(message)
+
+        old_task = self.album_tasks.get(album_key)
+        if old_task is not None and not old_task.done():
+            old_task.cancel()
+
+        task = asyncio.create_task(
+            self._delayed_flush_album(
+                album_key=album_key,
+                account_name=account_name,
+                chat=chat,
+                marked_chat_id=marked_chat_id,
+                grouped_id=grouped_id,
+                delay=1.2,
+            ),
+            name=f"template-album-flush-{marked_chat_id}-{grouped_id}",
+        )
+        task.add_done_callback(
+            lambda done_task, key=album_key: self._handle_album_task_done(
+                key,
+                done_task,
+            )
+        )
+
+        self.album_tasks[album_key] = task
+
+    def _handle_album_task_done(
+        self,
+        album_key: AlbumKey,
+        task: asyncio.Task,
+    ) -> None:
+        if task.cancelled():
+            return
+
+        try:
+            exception = task.exception()
+        except asyncio.CancelledError:
+            return
+
+        if exception is not None:
+            self.album_cache.pop(album_key, None)
+            self.album_tasks.pop(album_key, None)
+            self._log(
+                "error",
+                f"[模板采集] 相册聚合任务异常 | key={album_key} | error={exception}",
+            )
+
+    async def _delayed_flush_album(
+        self,
+        album_key: AlbumKey,
+        account_name: str,
+        chat,
+        marked_chat_id: int,
+        grouped_id: int,
+        delay: float,
+    ) -> None:
         try:
             await asyncio.sleep(delay)
-            await self._flush_album(account_name, chat, grouped_id)
+            await self._flush_album(
+                album_key=album_key,
+                account_name=account_name,
+                chat=chat,
+                marked_chat_id=marked_chat_id,
+                grouped_id=grouped_id,
+            )
         except asyncio.CancelledError:
             return
         except Exception as exc:
-            self._log("error", f"[模板采集] 相册聚合失败 | grouped_id={grouped_id} | error={exc}")
+            self.album_cache.pop(album_key, None)
+            self.album_tasks.pop(album_key, None)
+            self._log(
+                "error",
+                f"[模板采集] 相册聚合失败 | "
+                f"chat_id={marked_chat_id} | grouped_id={grouped_id} | error={exc}",
+            )
 
-    async def _flush_album(self, account_name: str, chat, grouped_id: int) -> None:
-        messages = self.album_cache.pop(grouped_id, [])
-        self.album_tasks.pop(grouped_id, None)
+    async def _flush_album(
+        self,
+        album_key: AlbumKey,
+        account_name: str,
+        chat,
+        marked_chat_id: int,
+        grouped_id: int,
+    ) -> None:
+        messages = self.album_cache.pop(album_key, [])
+        self.album_tasks.pop(album_key, None)
 
-        if not messages:
+        unique_messages: dict[int, Any] = {}
+
+        for message in messages:
+            message_id = self._message_id(message)
+
+            if message_id > 0:
+                unique_messages[message_id] = message
+
+        ordered_messages = [
+            unique_messages[message_id]
+            for message_id in sorted(unique_messages)
+        ]
+
+        if not ordered_messages:
             return
 
-        # 按消息 id 排序，保证顺序稳定
-        messages.sort(key=lambda m: m.id)
+        message_ids = [self._message_id(message) for message in ordered_messages]
+        text = self._album_text(ordered_messages)
+        has_media = any(self._has_media(message) for message in ordered_messages)
 
-        message_ids = [m.id for m in messages]
-        text = ""
-
-        # 优先取最后一条里可见的文本/caption
-        for m in reversed(messages):
-            candidate = (m.message or m.text or "").strip()
-            if candidate:
-                text = candidate
-                break
-
-        has_media = any(bool(getattr(m, "media", None)) for m in messages)
+        if not text and not has_media:
+            self._log(
+                "warning",
+                f"[模板采集] 相册内容为空，已跳过 | "
+                f"chat_id={marked_chat_id} | grouped_id={grouped_id}",
+            )
+            return
 
         template = self.store.create_template(
             account_name=account_name,
-            chat_id=telethon_utils.get_peer_id(chat),
-            chat_title=getattr(chat, "title", "") or "",
+            chat_id=marked_chat_id,
+            chat_title=self._chat_title(chat),
             message_ids=message_ids,
             text=text,
             has_media=has_media,
         )
 
-        # 相册模板标记
         template.message_type = "album"
         template.media_count = len(message_ids)
+        template.has_media = has_media
 
         self.store.add_template(template)
 
         self._log(
             "info",
-            f"[模板采集] 相册模板已入库 | grouped_id={grouped_id} | message_ids={message_ids}"
+            f"[模板采集] 相册模板已入库 | "
+            f"chat_id={marked_chat_id} | "
+            f"grouped_id={grouped_id} | "
+            f"message_ids={message_ids}",
         )
 
-    async def _save_single(self, account_name: str, chat, message) -> None:
-        text = (message.message or message.text or "").strip()
-        has_media = bool(getattr(message, "media", None))
+    def _album_text(self, messages: list[Any]) -> str:
+        for message in reversed(messages):
+            text = self._extract_message_text(message)
+
+            if text:
+                return text
+
+        return ""
+
+    async def _save_single(
+        self,
+        account_name: str,
+        chat,
+        marked_chat_id: int,
+        message,
+    ) -> None:
+        message_id = self._message_id(message)
+        text = self._extract_message_text(message)
+        has_media = self._has_media(message)
+
+        if not text and not has_media:
+            self._log(
+                "warning",
+                f"[模板采集] 单条消息内容为空，已跳过 | "
+                f"chat_id={marked_chat_id} | message_id={message_id}",
+            )
+            return
 
         template = self.store.create_template(
             account_name=account_name,
-            chat_id=telethon_utils.get_peer_id(chat),
-            chat_title=getattr(chat, "title", "") or "",
-            message_ids=[message.id],
+            chat_id=marked_chat_id,
+            chat_title=self._chat_title(chat),
+            message_ids=[message_id],
             text=text,
             has_media=has_media,
         )
 
-        # 单条消息类型
         template.message_type = "photo" if has_media else "text"
         template.media_count = 1 if has_media else 0
+        template.has_media = has_media
 
         self.store.add_template(template)
 
         self._log(
             "info",
-            f"[模板采集] 单条模板已入库 | message_id={message.id} | has_media={has_media}"
+            f"[模板采集] 单条模板已入库 | "
+            f"chat_id={marked_chat_id} | "
+            f"message_id={message_id} | "
+            f"has_media={has_media}",
         )

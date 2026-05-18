@@ -1,17 +1,22 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
 from telethon.errors import (
+    ChannelPrivateError,
     ChatWriteForbiddenError,
     FloodWaitError,
+    PeerIdInvalidError,
     UserBannedInChannelError,
+    UserNotParticipantError,
 )
 
 from app.core.models import (
+    ACCOUNT_ROTATE_MODE_ROUND_ROBIN,
+    ACCOUNT_ROTATE_MODE_SINGLE,
     GroupConfig,
     MESSAGE_MODE_TEMPLATE,
     MESSAGE_MODE_TEXT,
@@ -31,6 +36,13 @@ class SendResult:
     error: str = ""
     started_at: str = ""
     finished_at: str = ""
+    rotate_mode: str = ACCOUNT_ROTATE_MODE_SINGLE
+    account_index: int = 0
+    selected_account_name: str = ""
+    account_pool: list[str] = field(default_factory=list)
+    account_pool_size: int = 0
+    message_mode: str = MESSAGE_MODE_TEXT
+    template_id: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -43,6 +55,13 @@ class SendResult:
             "error": self.error,
             "started_at": self.started_at,
             "finished_at": self.finished_at,
+            "rotate_mode": self.rotate_mode,
+            "account_index": self.account_index,
+            "selected_account_name": self.selected_account_name,
+            "account_pool": self.account_pool,
+            "account_pool_size": self.account_pool_size,
+            "message_mode": self.message_mode,
+            "template_id": self.template_id,
         }
 
 
@@ -63,6 +82,98 @@ class GroupSendService:
     def _now_text() -> str:
         return datetime.now().isoformat(timespec="seconds")
 
+    @staticmethod
+    def _safe_int(value, default: int = 0) -> int:
+        try:
+            if value is None or value == "":
+                return default
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _task_rotate_mode(task: SendTaskConfig) -> str:
+        rotate_mode = str(
+            getattr(task, "account_rotate_mode", ACCOUNT_ROTATE_MODE_SINGLE) or ""
+        ).strip()
+
+        if rotate_mode not in {
+            ACCOUNT_ROTATE_MODE_SINGLE,
+            ACCOUNT_ROTATE_MODE_ROUND_ROBIN,
+        }:
+            return ACCOUNT_ROTATE_MODE_SINGLE
+
+        return rotate_mode
+
+    @staticmethod
+    def _task_account_pool(task: SendTaskConfig, account_name: str) -> list[str]:
+        account_pool: list[str] = []
+
+        for raw_account_name in getattr(task, "account_names", []) or []:
+            value = str(raw_account_name or "").strip()
+
+            if value and value not in account_pool:
+                account_pool.append(value)
+
+        selected_account_name = str(account_name or "").strip()
+
+        if selected_account_name and selected_account_name not in account_pool:
+            account_pool.insert(0, selected_account_name)
+
+        return account_pool
+
+    def _account_index(
+        self,
+        task: SendTaskConfig,
+        account_name: str,
+        account_pool: list[str],
+    ) -> int:
+        selected_account_name = str(account_name or "").strip()
+
+        if selected_account_name in account_pool:
+            return account_pool.index(selected_account_name)
+
+        current_index = self._safe_int(
+            getattr(task, "current_account_index", 0),
+            0,
+        )
+
+        if not account_pool:
+            return 0
+
+        return max(0, current_index) % len(account_pool)
+
+    def _build_result(
+        self,
+        account_name: str,
+        group: GroupConfig,
+        task: SendTaskConfig,
+        started_at: str,
+    ) -> SendResult:
+        account_pool = self._task_account_pool(task, account_name)
+        account_index = self._account_index(
+            task=task,
+            account_name=account_name,
+            account_pool=account_pool,
+        )
+
+        return SendResult(
+            task_id=task.task_id,
+            task_name=task.task_name,
+            account_name=account_name,
+            group_id=group.group_id,
+            chat_id=group.chat_id,
+            status="failed",
+            started_at=started_at,
+            rotate_mode=self._task_rotate_mode(task),
+            account_index=account_index,
+            selected_account_name=account_name,
+            account_pool=account_pool,
+            account_pool_size=len(account_pool),
+            message_mode=str(task.message_mode or MESSAGE_MODE_TEXT),
+            template_id=str(task.template_id or ""),
+        )
+
     async def send_text_to_chat(
         self,
         account_name: str,
@@ -70,7 +181,9 @@ class GroupSendService:
         chat_id: int,
         text: str,
     ) -> bool:
-        if not text.strip():
+        safe_text = str(text or "").strip()
+
+        if not safe_text:
             self._log(
                 "warning",
                 f"[{account_name}] 文本消息为空，已跳过 | chat_id={chat_id}",
@@ -78,7 +191,7 @@ class GroupSendService:
             return False
 
         target_peer = await client.get_input_entity(chat_id)
-        await client.send_message(target_peer, text)
+        await client.send_message(target_peer, safe_text)
         return True
 
     async def send_template_to_chat(
@@ -88,10 +201,19 @@ class GroupSendService:
         chat_id: int,
         template_id: str,
     ) -> bool:
+        safe_template_id = str(template_id or "").strip()
+
+        if not safe_template_id:
+            self._log(
+                "warning",
+                f"[{account_name}] 模板 ID 为空，已跳过 | chat_id={chat_id}",
+            )
+            return False
+
         return await self.template_sender.send_template_to_chat(
             account_name=account_name,
             client=client,
-            template_id=template_id,
+            template_id=safe_template_id,
             target_chat_id=chat_id,
         )
 
@@ -103,14 +225,10 @@ class GroupSendService:
         task: SendTaskConfig,
     ) -> SendResult:
         started_at = self._now_text()
-
-        result = SendResult(
-            task_id=task.task_id,
-            task_name=task.task_name,
+        result = self._build_result(
             account_name=account_name,
-            group_id=group.group_id,
-            chat_id=group.chat_id,
-            status="failed",
+            group=group,
+            task=task,
             started_at=started_at,
         )
 
@@ -140,6 +258,11 @@ class GroupSendService:
                 )
             else:
                 result.error = f"不支持的消息类型: {task.message_mode}"
+                self._log(
+                    "warning",
+                    f"[{account_name}] 不支持的消息类型 | "
+                    f"task={task.task_name} | message_mode={task.message_mode}",
+                )
                 return result
 
             if ok:
@@ -147,14 +270,22 @@ class GroupSendService:
                 self._log(
                     "info",
                     f"[{account_name}] 群发任务执行成功 | "
-                    f"task={task.task_name} | group={group.group_name} | chat_id={group.chat_id}",
+                    f"task={task.task_name} | "
+                    f"group={group.group_name} | "
+                    f"chat_id={group.chat_id} | "
+                    f"rotate_mode={result.rotate_mode} | "
+                    f"account_index={result.account_index}",
                 )
             else:
                 result.error = "发送服务返回失败"
                 self._log(
                     "warning",
                     f"[{account_name}] 群发任务执行失败 | "
-                    f"task={task.task_name} | group={group.group_name} | chat_id={group.chat_id}",
+                    f"task={task.task_name} | "
+                    f"group={group.group_name} | "
+                    f"chat_id={group.chat_id} | "
+                    f"rotate_mode={result.rotate_mode} | "
+                    f"account_index={result.account_index}",
                 )
 
             return result
@@ -187,12 +318,43 @@ class GroupSendService:
             )
             return result
 
+        except ChannelPrivateError:
+            result.error = "目标群组/频道不可访问，可能是私有群或账号未加入"
+            self._log(
+                "error",
+                f"[{account_name}] 目标群组/频道不可访问 | "
+                f"task={task.task_name} | chat_id={group.chat_id}",
+            )
+            return result
+
+        except UserNotParticipantError:
+            result.error = "账号不是目标群组成员"
+            self._log(
+                "error",
+                f"[{account_name}] 账号不是目标群组成员 | "
+                f"task={task.task_name} | chat_id={group.chat_id}",
+            )
+            return result
+
+        except PeerIdInvalidError:
+            result.error = "目标 Chat ID 无效或账号无法解析该会话"
+            self._log(
+                "error",
+                f"[{account_name}] 目标 Chat ID 无效 | "
+                f"task={task.task_name} | chat_id={group.chat_id}",
+            )
+            return result
+
         except Exception as exc:
             result.error = str(exc)
             self._log(
                 "error",
                 f"[{account_name}] 群发任务异常 | "
-                f"task={task.task_name} | chat_id={group.chat_id} | error={exc}",
+                f"task={task.task_name} | "
+                f"chat_id={group.chat_id} | "
+                f"rotate_mode={result.rotate_mode} | "
+                f"account_index={result.account_index} | "
+                f"error={exc}",
             )
             return result
 

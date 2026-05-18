@@ -87,22 +87,67 @@ QPushButton:disabled {
     color: #f8fafc;
 }
 
-QLineEdit, QTextEdit, QPlainTextEdit, QComboBox, QSpinBox, QDoubleSpinBox {
+QLineEdit,
+QTextEdit,
+QPlainTextEdit,
+QComboBox,
+QSpinBox,
+QDoubleSpinBox,
+QListWidget {
     background: #ffffff;
     border: 1px solid #d1d5db;
     border-radius: 10px;
     padding: 8px 10px;
     selection-background-color: #bfdbfe;
+    selection-color: #111827;
 }
 
-QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus, QComboBox:focus,
-QSpinBox:focus, QDoubleSpinBox:focus {
+QLineEdit:focus,
+QTextEdit:focus,
+QPlainTextEdit:focus,
+QComboBox:focus,
+QSpinBox:focus,
+QDoubleSpinBox:focus,
+QListWidget:focus {
     border: 1px solid #60a5fa;
+}
+
+QLineEdit:read-only {
+    background: #f8fafc;
+    color: #64748b;
 }
 
 QComboBox::drop-down {
     border: none;
     width: 24px;
+}
+
+QComboBox::down-arrow {
+    width: 0px;
+    height: 0px;
+}
+
+QComboBox QAbstractItemView {
+    background: #ffffff;
+    border: 1px solid #d1d5db;
+    selection-background-color: #dbeafe;
+    selection-color: #111827;
+    outline: 0;
+}
+
+QListWidget::item {
+    min-height: 30px;
+    padding: 4px 8px;
+    border-radius: 6px;
+}
+
+QListWidget::item:selected {
+    background: #dbeafe;
+    color: #111827;
+}
+
+QListWidget::item:hover {
+    background: #eef2ff;
 }
 
 QCheckBox {
@@ -136,6 +181,15 @@ QTableWidget {
     alternate-background-color: #fafcff;
 }
 
+QTableWidget::item {
+    padding: 6px;
+}
+
+QTableWidget::item:selected {
+    background: #dbeafe;
+    color: #111827;
+}
+
 QHeaderView::section {
     background: #f8fafc;
     color: #374151;
@@ -161,6 +215,15 @@ QStatusBar {
     color: #475569;
 }
 
+QScrollArea {
+    background: transparent;
+    border: none;
+}
+
+QScrollArea > QWidget > QWidget {
+    background: transparent;
+}
+
 QScrollBar:vertical {
     background: transparent;
     width: 10px;
@@ -177,7 +240,8 @@ QScrollBar::handle:vertical:hover {
     background: #94a3b8;
 }
 
-QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+QScrollBar::add-line:vertical,
+QScrollBar::sub-line:vertical {
     height: 0;
 }
 
@@ -197,11 +261,21 @@ QScrollBar::handle:horizontal:hover {
     background: #94a3b8;
 }
 
-QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+QScrollBar::add-line:horizontal,
+QScrollBar::sub-line:horizontal {
     width: 0;
 }
 
-QSplitter::handle {
+QMessageBox {
+    background-color: #ffffff;
+}
+
+QMessageBox QLabel {
+    color: #111827;
     background: transparent;
+}
+
+QMessageBox QPushButton {
+    min-width: 82px;
 }
 """

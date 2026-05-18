@@ -22,6 +22,9 @@ TASK_STATUS_IDLE = "idle"
 TASK_STATUS_RUNNING = "running"
 TASK_STATUS_ERROR = "error"
 
+ACCOUNT_ROTATE_MODE_SINGLE = "single"
+ACCOUNT_ROTATE_MODE_ROUND_ROBIN = "round_robin"
+
 
 @dataclass
 class AccountConfig:
@@ -109,6 +112,9 @@ class SendTaskConfig:
     task_name: str
     enabled: bool = True
     account_name: str = ""
+    account_names: list[str] = field(default_factory=list)
+    account_rotate_mode: str = ACCOUNT_ROTATE_MODE_SINGLE
+    current_account_index: int = 0
     group_id: str = ""
     message_mode: str = MESSAGE_MODE_TEXT
     text: str = ""
@@ -122,12 +128,46 @@ class SendTaskConfig:
     next_run_at: str = ""
     remark: str = ""
 
+    def __post_init__(self) -> None:
+        self.account_name = str(self.account_name or "").strip()
+
+        normalized_account_names: list[str] = []
+        for account_name in self.account_names or []:
+            value = str(account_name or "").strip()
+            if value and value not in normalized_account_names:
+                normalized_account_names.append(value)
+
+        if not normalized_account_names and self.account_name:
+            normalized_account_names.append(self.account_name)
+
+        if not self.account_name and normalized_account_names:
+            self.account_name = normalized_account_names[0]
+
+        self.account_names = normalized_account_names
+
+        if self.account_rotate_mode not in {
+            ACCOUNT_ROTATE_MODE_SINGLE,
+            ACCOUNT_ROTATE_MODE_ROUND_ROBIN,
+        }:
+            self.account_rotate_mode = ACCOUNT_ROTATE_MODE_SINGLE
+
+        try:
+            self.current_account_index = int(self.current_account_index)
+        except (TypeError, ValueError):
+            self.current_account_index = 0
+
+        if self.current_account_index < 0:
+            self.current_account_index = 0
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "task_id": self.task_id,
             "task_name": self.task_name,
             "enabled": self.enabled,
             "account_name": self.account_name,
+            "account_names": self.account_names,
+            "account_rotate_mode": self.account_rotate_mode,
+            "current_account_index": self.current_account_index,
             "group_id": self.group_id,
             "message_mode": self.message_mode,
             "text": self.text,
