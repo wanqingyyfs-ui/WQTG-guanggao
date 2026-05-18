@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
@@ -27,6 +28,8 @@ from PySide6.QtWidgets import (
 from app.core.models import (
     ACCOUNT_ROTATE_MODE_ROUND_ROBIN,
     ACCOUNT_ROTATE_MODE_SINGLE,
+    GROUP_ROTATE_MODE_ROUND_ROBIN,
+    GROUP_ROTATE_MODE_SINGLE,
     AccountConfig,
     GroupConfig,
     MESSAGE_MODE_TEMPLATE,
@@ -57,14 +60,17 @@ class TaskPage(QWidget):
         self.templates: list[TemplateConfig] = []
         self.tasks: list[SendTaskConfig] = []
 
-        self.table = QTableWidget(0, 8)
+        self.table = QTableWidget(0, 11)
         self.table.setHorizontalHeaderLabels(
             [
                 "启用",
                 "任务名称",
                 "账号池",
-                "轮换模式",
-                "目标群",
+                "账号轮换",
+                "目标群组",
+                "群组轮换",
+                "账号延迟",
+                "群组延迟",
                 "消息类型",
                 "调度模式",
                 "下次运行",
@@ -102,7 +108,36 @@ class TaskPage(QWidget):
         self.current_account_index_label.setMinimumHeight(36)
         self.current_account_index_label.setAlignment(Qt.AlignmentFlag.AlignVCenter)
 
-        self.group_combo = QComboBox()
+        self.account_delay_spin = QSpinBox()
+        self.account_delay_spin.setRange(0, 86400)
+        self.account_delay_spin.setValue(0)
+        self.account_delay_spin.setSuffix(" 秒")
+
+        self.group_list = QListWidget()
+        self.group_list.setSelectionMode(
+            QAbstractItemView.SelectionMode.MultiSelection
+        )
+        self.group_list.setMinimumHeight(132)
+
+        self.group_rotate_mode_combo = QComboBox()
+        self.group_rotate_mode_combo.addItem(
+            "单群组",
+            GROUP_ROTATE_MODE_SINGLE,
+        )
+        self.group_rotate_mode_combo.addItem(
+            "顺序轮询",
+            GROUP_ROTATE_MODE_ROUND_ROBIN,
+        )
+
+        self.current_group_index_label = QLabel("未选择群组")
+        self.current_group_index_label.setMinimumHeight(36)
+        self.current_group_index_label.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+
+        self.group_delay_spin = QSpinBox()
+        self.group_delay_spin.setRange(0, 86400)
+        self.group_delay_spin.setValue(0)
+        self.group_delay_spin.setSuffix(" 秒")
+
         self.message_mode_combo = QComboBox()
         self.message_mode_combo.addItem("文本", MESSAGE_MODE_TEXT)
         self.message_mode_combo.addItem("模板", MESSAGE_MODE_TEMPLATE)
@@ -152,9 +187,13 @@ class TaskPage(QWidget):
         form_layout.addRow("任务名称", self.name_edit)
         form_layout.addRow("启用状态", self.enabled_check)
         form_layout.addRow("发送账号池", self.account_list)
-        form_layout.addRow("轮换模式", self.account_rotate_mode_combo)
-        form_layout.addRow("当前轮换序号", self.current_account_index_label)
-        form_layout.addRow("目标群组", self.group_combo)
+        form_layout.addRow("账号轮换模式", self.account_rotate_mode_combo)
+        form_layout.addRow("当前账号序号", self.current_account_index_label)
+        form_layout.addRow("账号延迟", self.account_delay_spin)
+        form_layout.addRow("目标群组池", self.group_list)
+        form_layout.addRow("群组轮询模式", self.group_rotate_mode_combo)
+        form_layout.addRow("当前群组序号", self.current_group_index_label)
+        form_layout.addRow("群组延迟", self.group_delay_spin)
         form_layout.addRow("消息类型", self.message_mode_combo)
         form_layout.addRow("文本内容", self.text_edit)
         form_layout.addRow("模板选择", self.template_combo)
@@ -221,9 +260,16 @@ class TaskPage(QWidget):
         self.account_rotate_mode_combo.currentIndexChanged.connect(
             self.update_current_account_index_label
         )
+        self.group_list.itemSelectionChanged.connect(
+            self.update_current_group_index_label
+        )
+        self.group_rotate_mode_combo.currentIndexChanged.connect(
+            self.update_current_group_index_label
+        )
 
         self.on_message_mode_changed()
         self.update_current_account_index_label()
+        self.update_current_group_index_label()
 
     def set_context(
         self,
@@ -236,7 +282,7 @@ class TaskPage(QWidget):
         self.templates = list(templates)
 
         current_account_names = self._get_selected_account_names()
-        current_group = self.group_combo.currentData()
+        current_group_ids = self._get_selected_group_ids()
         current_template = self.template_combo.currentData()
 
         self.account_list.blockSignals(True)
@@ -250,10 +296,17 @@ class TaskPage(QWidget):
         self.account_list.blockSignals(False)
         self._restore_account_selection(current_account_names)
 
-        self.group_combo.clear()
+        self.group_list.blockSignals(True)
+        self.group_list.clear()
+
         for group in self.groups:
             label = f"{group.group_name} ({group.chat_id})"
-            self.group_combo.addItem(label, group.group_id)
+            item = QListWidgetItem(label)
+            item.setData(Qt.ItemDataRole.UserRole, group.group_id)
+            self.group_list.addItem(item)
+
+        self.group_list.blockSignals(False)
+        self._restore_group_selection(current_group_ids)
 
         self.template_combo.clear()
         self.template_combo.addItem("请选择模板", "")
@@ -261,9 +314,9 @@ class TaskPage(QWidget):
         for template in self.templates:
             self.template_combo.addItem(template.template_name, template.template_id)
 
-        self._restore_combo_value(self.group_combo, current_group)
         self._restore_combo_value(self.template_combo, current_template)
         self.update_current_account_index_label()
+        self.update_current_group_index_label()
 
     def set_tasks(self, tasks: list[SendTaskConfig]) -> None:
         self.tasks = list(tasks)
@@ -277,21 +330,32 @@ class TaskPage(QWidget):
             enabled_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
 
             self.table.setItem(row, 0, enabled_item)
-            self.table.setItem(row, 1, QTableWidgetItem(task.task_name))
+            self.table.setItem(row, 1, QTableWidgetItem(str(task.task_name or "")))
             self.table.setItem(row, 2, QTableWidgetItem(self._account_pool_label(task)))
-            self.table.setItem(row, 3, QTableWidgetItem(self._rotate_mode_label(task)))
-            self.table.setItem(row, 4, QTableWidgetItem(self._group_label(task.group_id)))
+            self.table.setItem(row, 3, QTableWidgetItem(self._account_rotate_mode_label(task)))
+            self.table.setItem(row, 4, QTableWidgetItem(self._group_pool_label(task)))
+            self.table.setItem(row, 5, QTableWidgetItem(self._group_rotate_mode_label(task)))
             self.table.setItem(
                 row,
-                5,
+                6,
+                QTableWidgetItem(f"{self._safe_int(getattr(task, 'account_delay_seconds', 0), 0)} 秒"),
+            )
+            self.table.setItem(
+                row,
+                7,
+                QTableWidgetItem(f"{self._safe_int(getattr(task, 'group_delay_seconds', 0), 0)} 秒"),
+            )
+            self.table.setItem(
+                row,
+                8,
                 QTableWidgetItem(self._message_mode_label(task.message_mode)),
             )
             self.table.setItem(
                 row,
-                6,
+                9,
                 QTableWidgetItem(self._schedule_mode_label(task.schedule_mode)),
             )
-            self.table.setItem(row, 7, QTableWidgetItem(task.next_run_at))
+            self.table.setItem(row, 10, QTableWidgetItem(str(task.next_run_at or "")))
 
     def get_selected_row(self) -> int:
         selected_rows = self.table.selectionModel().selectedRows()
@@ -313,15 +377,20 @@ class TaskPage(QWidget):
             task_id = existing_task.task_id
             last_run_at = existing_task.last_run_at
             next_run_at = existing_task.next_run_at
-            current_account_index = max(
+            current_account_index = self._safe_non_negative_int(
+                getattr(existing_task, "current_account_index", 0),
                 0,
-                int(getattr(existing_task, "current_account_index", 0) or 0),
+            )
+            current_group_index = self._safe_non_negative_int(
+                getattr(existing_task, "current_group_index", 0),
+                0,
             )
         else:
             task_id = uuid.uuid4().hex
             last_run_at = ""
             next_run_at = ""
             current_account_index = 0
+            current_group_index = 0
 
         account_names = self._get_selected_account_names()
         account_rotate_mode = str(
@@ -339,6 +408,32 @@ class TaskPage(QWidget):
         else:
             current_account_index = 0
 
+        group_ids = self._get_selected_group_ids()
+        group_rotate_mode = str(
+            self.group_rotate_mode_combo.currentData()
+            or GROUP_ROTATE_MODE_SINGLE
+        )
+
+        if group_rotate_mode == GROUP_ROTATE_MODE_SINGLE and group_ids:
+            group_ids = [group_ids[0]]
+
+        group_id = group_ids[0] if group_ids else ""
+
+        if group_ids:
+            current_group_index = current_group_index % len(group_ids)
+        else:
+            current_group_index = 0
+
+        daily_time = self.daily_time_edit.text().strip() or "09:00"
+        if self.schedule_mode_combo.currentData() == SCHEDULE_MODE_DAILY:
+            self._validate_daily_time(daily_time)
+
+        random_delay_min = int(self.random_delay_min_spin.value())
+        random_delay_max = int(self.random_delay_max_spin.value())
+
+        if random_delay_max < random_delay_min:
+            raise ValueError("随机延迟最大秒不能小于随机延迟最小秒")
+
         return SendTaskConfig(
             task_id=task_id,
             task_name=self.name_edit.text().strip(),
@@ -347,7 +442,12 @@ class TaskPage(QWidget):
             account_names=account_names,
             account_rotate_mode=account_rotate_mode,
             current_account_index=current_account_index,
-            group_id=str(self.group_combo.currentData() or ""),
+            account_delay_seconds=int(self.account_delay_spin.value()),
+            group_id=group_id,
+            group_ids=group_ids,
+            group_rotate_mode=group_rotate_mode,
+            current_group_index=current_group_index,
+            group_delay_seconds=int(self.group_delay_spin.value()),
             message_mode=str(self.message_mode_combo.currentData() or MESSAGE_MODE_TEXT),
             text=self.text_edit.toPlainText().strip(),
             template_id=str(self.template_combo.currentData() or ""),
@@ -355,9 +455,9 @@ class TaskPage(QWidget):
                 self.schedule_mode_combo.currentData() or SCHEDULE_MODE_MANUAL
             ),
             interval_seconds=int(self.interval_spin.value()),
-            daily_time=self.daily_time_edit.text().strip() or "09:00",
-            random_delay_min=int(self.random_delay_min_spin.value()),
-            random_delay_max=int(self.random_delay_max_spin.value()),
+            daily_time=daily_time,
+            random_delay_min=random_delay_min,
+            random_delay_max=random_delay_max,
             last_run_at=last_run_at,
             next_run_at=next_run_at,
             remark=self.remark_edit.toPlainText().strip(),
@@ -370,7 +470,10 @@ class TaskPage(QWidget):
         self.enabled_check.setChecked(True)
         self._restore_account_selection([], select_first_when_empty=True)
         self.account_rotate_mode_combo.setCurrentIndex(0)
-        self.group_combo.setCurrentIndex(0 if self.group_combo.count() else -1)
+        self.account_delay_spin.setValue(0)
+        self._restore_group_selection([], select_first_when_empty=True)
+        self.group_rotate_mode_combo.setCurrentIndex(0)
+        self.group_delay_spin.setValue(0)
         self.message_mode_combo.setCurrentIndex(0)
         self.text_edit.clear()
         self.template_combo.setCurrentIndex(0 if self.template_combo.count() else -1)
@@ -383,6 +486,7 @@ class TaskPage(QWidget):
 
         self.on_message_mode_changed()
         self.update_current_account_index_label()
+        self.update_current_group_index_label()
 
     def on_selection_changed(self) -> None:
         row = self.get_selected_row()
@@ -391,27 +495,51 @@ class TaskPage(QWidget):
 
         task = self.tasks[row]
         account_names = self._task_account_names(task)
+        group_ids = self._task_group_ids(task)
 
-        self.name_edit.setText(task.task_name)
-        self.enabled_check.setChecked(task.enabled)
+        self.name_edit.setText(str(task.task_name or ""))
+        self.enabled_check.setChecked(bool(task.enabled))
         self._restore_account_selection(account_names)
         self._restore_combo_value(
             self.account_rotate_mode_combo,
-            self._task_rotate_mode(task),
+            self._task_account_rotate_mode(task),
         )
-        self._restore_combo_value(self.group_combo, task.group_id)
+        self.account_delay_spin.setValue(
+            self._safe_non_negative_int(
+                getattr(task, "account_delay_seconds", 0),
+                0,
+            )
+        )
+
+        self._restore_group_selection(group_ids)
+        self._restore_combo_value(
+            self.group_rotate_mode_combo,
+            self._task_group_rotate_mode(task),
+        )
+        self.group_delay_spin.setValue(
+            self._safe_non_negative_int(
+                getattr(task, "group_delay_seconds", 0),
+                0,
+            )
+        )
+
         self._restore_combo_value(self.message_mode_combo, task.message_mode)
-        self.text_edit.setPlainText(task.text)
+        self.text_edit.setPlainText(str(task.text or ""))
         self._restore_combo_value(self.template_combo, task.template_id)
         self._restore_combo_value(self.schedule_mode_combo, task.schedule_mode)
-        self.interval_spin.setValue(max(1, int(task.interval_seconds)))
-        self.daily_time_edit.setText(task.daily_time or "09:00")
-        self.random_delay_min_spin.setValue(max(0, int(task.random_delay_min)))
-        self.random_delay_max_spin.setValue(max(0, int(task.random_delay_max)))
-        self.remark_edit.setPlainText(task.remark)
+        self.interval_spin.setValue(max(1, self._safe_int(task.interval_seconds, 3600)))
+        self.daily_time_edit.setText(str(task.daily_time or "09:00"))
+        self.random_delay_min_spin.setValue(
+            self._safe_non_negative_int(task.random_delay_min, 0)
+        )
+        self.random_delay_max_spin.setValue(
+            self._safe_non_negative_int(task.random_delay_max, 0)
+        )
+        self.remark_edit.setPlainText(str(task.remark or ""))
 
         self.on_message_mode_changed()
         self.update_current_account_index_label()
+        self.update_current_group_index_label()
 
     def on_message_mode_changed(self) -> None:
         mode = self.message_mode_combo.currentData()
@@ -432,11 +560,12 @@ class TaskPage(QWidget):
         row = self.get_selected_row()
 
         if 0 <= row < len(self.tasks):
-            current_index = int(
-                getattr(self.tasks[row], "current_account_index", 0) or 0
+            current_index = self._safe_non_negative_int(
+                getattr(self.tasks[row], "current_account_index", 0),
+                0,
             )
 
-        current_index = max(0, current_index) % len(account_names)
+        current_index = current_index % len(account_names)
         current_account_name = account_names[current_index]
 
         if self.account_rotate_mode_combo.currentData() == ACCOUNT_ROTATE_MODE_ROUND_ROBIN:
@@ -449,6 +578,36 @@ class TaskPage(QWidget):
 
         self.current_account_index_label.setText(text)
 
+    def update_current_group_index_label(self) -> None:
+        group_ids = self._get_selected_group_ids()
+
+        if not group_ids:
+            self.current_group_index_label.setText("未选择群组")
+            return
+
+        current_index = 0
+        row = self.get_selected_row()
+
+        if 0 <= row < len(self.tasks):
+            current_index = self._safe_non_negative_int(
+                getattr(self.tasks[row], "current_group_index", 0),
+                0,
+            )
+
+        current_index = current_index % len(group_ids)
+        current_group_id = group_ids[current_index]
+        current_group_label = self._group_label(current_group_id)
+
+        if self.group_rotate_mode_combo.currentData() == GROUP_ROTATE_MODE_ROUND_ROBIN:
+            text = (
+                f"第 {current_index + 1} 个 / 共 {len(group_ids)} 个"
+                f"（当前：{current_group_label}）"
+            )
+        else:
+            text = f"单群组：{self._group_label(group_ids[0])}"
+
+        self.current_group_index_label.setText(text)
+
     def _get_selected_account_names(self) -> list[str]:
         account_names: list[str] = []
 
@@ -459,6 +618,17 @@ class TaskPage(QWidget):
                 account_names.append(account_name)
 
         return account_names
+
+    def _get_selected_group_ids(self) -> list[str]:
+        group_ids: list[str] = []
+
+        for item in self.group_list.selectedItems():
+            group_id = str(item.data(Qt.ItemDataRole.UserRole) or "").strip()
+
+            if group_id and group_id not in group_ids:
+                group_ids.append(group_id)
+
+        return group_ids
 
     def _restore_account_selection(
         self,
@@ -490,6 +660,36 @@ class TaskPage(QWidget):
         self.account_list.blockSignals(False)
         self.update_current_account_index_label()
 
+    def _restore_group_selection(
+        self,
+        group_ids: list[str],
+        select_first_when_empty: bool = False,
+    ) -> None:
+        wanted_group_ids = {
+            str(group_id or "").strip()
+            for group_id in group_ids
+            if str(group_id or "").strip()
+        }
+
+        self.group_list.blockSignals(True)
+        self.group_list.clearSelection()
+
+        matched = False
+
+        for row in range(self.group_list.count()):
+            item = self.group_list.item(row)
+            group_id = str(item.data(Qt.ItemDataRole.UserRole) or "").strip()
+
+            if group_id in wanted_group_ids:
+                item.setSelected(True)
+                matched = True
+
+        if not matched and select_first_when_empty and self.group_list.count() > 0:
+            self.group_list.item(0).setSelected(True)
+
+        self.group_list.blockSignals(False)
+        self.update_current_group_index_label()
+
     @staticmethod
     def _restore_combo_value(combo: QComboBox, value) -> None:
         index = combo.findData(value)
@@ -512,8 +712,24 @@ class TaskPage(QWidget):
 
         return account_names
 
+    def _task_group_ids(self, task: SendTaskConfig) -> list[str]:
+        group_ids: list[str] = []
+
+        for raw_group_id in getattr(task, "group_ids", []) or []:
+            group_id = str(raw_group_id or "").strip()
+
+            if group_id and group_id not in group_ids:
+                group_ids.append(group_id)
+
+        legacy_group_id = str(getattr(task, "group_id", "") or "").strip()
+
+        if legacy_group_id and legacy_group_id not in group_ids:
+            group_ids.insert(0, legacy_group_id)
+
+        return group_ids
+
     @staticmethod
-    def _task_rotate_mode(task: SendTaskConfig) -> str:
+    def _task_account_rotate_mode(task: SendTaskConfig) -> str:
         rotate_mode = str(
             getattr(task, "account_rotate_mode", ACCOUNT_ROTATE_MODE_SINGLE) or ""
         ).strip()
@@ -526,6 +742,20 @@ class TaskPage(QWidget):
 
         return rotate_mode
 
+    @staticmethod
+    def _task_group_rotate_mode(task: SendTaskConfig) -> str:
+        rotate_mode = str(
+            getattr(task, "group_rotate_mode", GROUP_ROTATE_MODE_SINGLE) or ""
+        ).strip()
+
+        if rotate_mode not in {
+            GROUP_ROTATE_MODE_SINGLE,
+            GROUP_ROTATE_MODE_ROUND_ROBIN,
+        }:
+            return GROUP_ROTATE_MODE_SINGLE
+
+        return rotate_mode
+
     def _account_pool_label(self, task: SendTaskConfig) -> str:
         account_names = self._task_account_names(task)
 
@@ -534,17 +764,43 @@ class TaskPage(QWidget):
 
         return "、".join(account_names)
 
-    def _rotate_mode_label(self, task: SendTaskConfig) -> str:
+    def _group_pool_label(self, task: SendTaskConfig) -> str:
+        group_ids = self._task_group_ids(task)
+
+        if not group_ids:
+            return ""
+
+        return "、".join(self._group_label(group_id) for group_id in group_ids)
+
+    def _account_rotate_mode_label(self, task: SendTaskConfig) -> str:
         account_names = self._task_account_names(task)
-        rotate_mode = self._task_rotate_mode(task)
+        rotate_mode = self._task_account_rotate_mode(task)
 
         if rotate_mode == ACCOUNT_ROTATE_MODE_ROUND_ROBIN:
             account_count = max(1, len(account_names))
-            current_index = int(getattr(task, "current_account_index", 0) or 0)
-            current_index = max(0, current_index) % account_count
+            current_index = self._safe_non_negative_int(
+                getattr(task, "current_account_index", 0),
+                0,
+            )
+            current_index = current_index % account_count
             return f"顺序轮换（{current_index + 1}/{account_count}）"
 
         return "单账号"
+
+    def _group_rotate_mode_label(self, task: SendTaskConfig) -> str:
+        group_ids = self._task_group_ids(task)
+        rotate_mode = self._task_group_rotate_mode(task)
+
+        if rotate_mode == GROUP_ROTATE_MODE_ROUND_ROBIN:
+            group_count = max(1, len(group_ids))
+            current_index = self._safe_non_negative_int(
+                getattr(task, "current_group_index", 0),
+                0,
+            )
+            current_index = current_index % group_count
+            return f"顺序轮询（{current_index + 1}/{group_count}）"
+
+        return "单群组"
 
     def _group_label(self, group_id: str) -> str:
         group = next((item for item in self.groups if item.group_id == group_id), None)
@@ -565,3 +821,38 @@ class TaskPage(QWidget):
         if mode == SCHEDULE_MODE_DAILY:
             return "每日"
         return "手动"
+
+    @staticmethod
+    def _safe_int(value: Any, default: int = 0) -> int:
+        try:
+            if value is None or value == "":
+                return default
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    @classmethod
+    def _safe_non_negative_int(cls, value: Any, default: int = 0) -> int:
+        number = cls._safe_int(value, default)
+
+        if number < 0:
+            return 0
+
+        return number
+
+    @staticmethod
+    def _validate_daily_time(value: str) -> None:
+        raw_text = str(value or "").strip()
+
+        try:
+            hour_text, minute_text = raw_text.split(":", 1)
+            hour = int(hour_text)
+            minute = int(minute_text)
+        except Exception as exc:
+            raise ValueError("每日时间格式必须是 HH:MM，例如 09:30") from exc
+
+        if hour < 0 or hour > 23:
+            raise ValueError("每日时间小时必须在 00-23 之间")
+
+        if minute < 0 or minute > 59:
+            raise ValueError("每日时间分钟必须在 00-59 之间")

@@ -3,6 +3,7 @@ from __future__ import annotations
 import concurrent.futures
 import sys
 from pathlib import Path
+from typing import Any
 
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QIcon
@@ -14,6 +15,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.core.models import (
+    MESSAGE_MODE_TEMPLATE,
+    MESSAGE_MODE_TEXT,
+)
 from app.gui.dialogs.login_dialog import LoginConfirmDialog
 from app.gui.dialogs.verify_dialog import VerifyInputDialog
 from app.gui.pages.account_page import AccountPage
@@ -160,7 +165,10 @@ class MainWindow(QMainWindow):
         self.scheduler_status = self.runtime_service.get_scheduler_status()
 
         if hasattr(self, "log_page"):
-            self.log_page.logs_dir = str(self.runtime_service.get_logs_dir())
+            if hasattr(self.log_page, "set_logs_dir"):
+                self.log_page.set_logs_dir(self.runtime_service.get_logs_dir())
+            else:
+                self.log_page.logs_dir = str(self.runtime_service.get_logs_dir())
 
     def refresh_all_views(self) -> None:
         self.dashboard_page.update_summary(
@@ -239,7 +247,7 @@ class MainWindow(QMainWindow):
                 task.account_names = replaced_names
                 changed = True
 
-            if task.account_name == old_value:
+            if str(getattr(task, "account_name", "") or "").strip() == old_value:
                 task.account_name = new_value
                 changed = True
 
@@ -262,19 +270,19 @@ class MainWindow(QMainWindow):
                 task.account_names = filtered_account_names
                 changed = True
 
-            if task.account_name == target_account_name:
+            if str(getattr(task, "account_name", "") or "").strip() == target_account_name:
                 task.account_name = (
                     filtered_account_names[0] if filtered_account_names else ""
                 )
                 changed = True
 
             if filtered_account_names:
-                try:
-                    current_index = int(task.current_account_index)
-                except (TypeError, ValueError):
-                    current_index = 0
+                current_index = self._safe_non_negative_int(
+                    getattr(task, "current_account_index", 0),
+                    0,
+                )
 
-                if current_index < 0 or current_index >= len(filtered_account_names):
+                if current_index >= len(filtered_account_names):
                     task.current_account_index = 0
                     changed = True
             else:
@@ -283,6 +291,61 @@ class MainWindow(QMainWindow):
                     changed = True
 
         return changed
+
+    def _remove_group_from_tasks(self, group_id: str) -> bool:
+        target_group_id = str(group_id or "").strip()
+        if not target_group_id:
+            return False
+
+        changed = False
+
+        for task in self.tasks:
+            group_ids = self._task_group_ids(task)
+            filtered_group_ids = [
+                value for value in group_ids if value != target_group_id
+            ]
+
+            if filtered_group_ids != group_ids:
+                task.group_ids = filtered_group_ids
+                changed = True
+
+            if str(getattr(task, "group_id", "") or "").strip() == target_group_id:
+                task.group_id = filtered_group_ids[0] if filtered_group_ids else ""
+                changed = True
+
+            if filtered_group_ids:
+                current_index = self._safe_non_negative_int(
+                    getattr(task, "current_group_index", 0),
+                    0,
+                )
+
+                if current_index >= len(filtered_group_ids):
+                    task.current_group_index = 0
+                    changed = True
+            else:
+                if getattr(task, "current_group_index", 0) != 0:
+                    task.current_group_index = 0
+                    changed = True
+
+        return changed
+
+    @staticmethod
+    def _safe_int(value: Any, default: int = 0) -> int:
+        try:
+            if value is None or value == "":
+                return default
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    @classmethod
+    def _safe_non_negative_int(cls, value: Any, default: int = 0) -> int:
+        number = cls._safe_int(value, default)
+
+        if number < 0:
+            return 0
+
+        return number
 
     @staticmethod
     def _task_account_names(task) -> list[str]:
@@ -298,6 +361,21 @@ class MainWindow(QMainWindow):
             account_names.insert(0, legacy_account_name)
 
         return account_names
+
+    @staticmethod
+    def _task_group_ids(task) -> list[str]:
+        group_ids: list[str] = []
+
+        for raw_group_id in getattr(task, "group_ids", []) or []:
+            value = str(raw_group_id or "").strip()
+            if value and value not in group_ids:
+                group_ids.append(value)
+
+        legacy_group_id = str(getattr(task, "group_id", "") or "").strip()
+        if legacy_group_id and legacy_group_id not in group_ids:
+            group_ids.insert(0, legacy_group_id)
+
+        return group_ids
 
     def _validate_task_accounts(self, task) -> None:
         account_names = self._task_account_names(task)
@@ -318,7 +396,65 @@ class MainWindow(QMainWindow):
             )
 
         task.account_names = account_names
-        task.account_name = task.account_name or account_names[0]
+
+        if not str(getattr(task, "account_name", "") or "").strip():
+            task.account_name = account_names[0]
+
+        if task.account_name not in account_names:
+            task.account_name = account_names[0]
+
+        current_index = self._safe_non_negative_int(
+            getattr(task, "current_account_index", 0),
+            0,
+        )
+        task.current_account_index = current_index % len(account_names)
+
+    def _validate_task_groups(self, task) -> None:
+        group_ids = self._task_group_ids(task)
+        if not group_ids:
+            raise ValueError("请选择至少一个目标群组")
+
+        existing_group_ids = {group.group_id for group in self.groups}
+        missing_group_ids = [
+            group_id
+            for group_id in group_ids
+            if group_id not in existing_group_ids
+        ]
+
+        if missing_group_ids:
+            raise ValueError(
+                "目标群组不存在："
+                + "、".join(missing_group_ids)
+            )
+
+        task.group_ids = group_ids
+
+        if not str(getattr(task, "group_id", "") or "").strip():
+            task.group_id = group_ids[0]
+
+        if task.group_id not in group_ids:
+            task.group_id = group_ids[0]
+
+        current_index = self._safe_non_negative_int(
+            getattr(task, "current_group_index", 0),
+            0,
+        )
+        task.current_group_index = current_index % len(group_ids)
+
+    def _validate_task_message(self, task) -> None:
+        message_mode = str(getattr(task, "message_mode", "") or "").strip()
+
+        if message_mode == MESSAGE_MODE_TEMPLATE:
+            if not str(getattr(task, "template_id", "") or "").strip():
+                raise ValueError("模板消息必须选择模板")
+            return
+
+        if message_mode == MESSAGE_MODE_TEXT:
+            if not str(getattr(task, "text", "") or "").strip():
+                raise ValueError("文本消息必须填写内容")
+            return
+
+        raise ValueError(f"不支持的消息类型：{message_mode or '空'}")
 
     def on_runtime_log_received(self, level: str, message: str) -> None:
         self.log_page.append_log(level, message)
@@ -349,8 +485,11 @@ class MainWindow(QMainWindow):
     def on_templates_sync_timer(self) -> None:
         try:
             self.runtime_service.sync_templates_from_disk()
-        except Exception:
-            pass
+        except Exception as exc:
+            self.on_runtime_log_received(
+                "WARNING",
+                f"自动同步模板列表失败：{exc}",
+            )
 
     def on_code_input_required(
         self,
@@ -591,15 +730,15 @@ class MainWindow(QMainWindow):
         group_id = self.groups[row].group_id
         self.groups.pop(row)
 
-        for task in self.tasks:
-            if task.group_id == group_id:
-                task.group_id = ""
+        tasks_changed = self._remove_group_from_tasks(group_id)
 
         self.runtime_service.save_groups(self.groups)
-        self.runtime_service.save_tasks(self.tasks)
+        if tasks_changed:
+            self.runtime_service.save_tasks(self.tasks)
+
         self.group_page.clear_form()
         self.refresh_all_views()
-        self._show_info("群组已删除，相关任务的目标群已清空")
+        self._show_info("群组已删除，相关任务的目标群组池已同步更新")
 
     def on_save_task_clicked(self) -> None:
         try:
@@ -609,16 +748,8 @@ class MainWindow(QMainWindow):
                 raise ValueError("任务名称不能为空")
 
             self._validate_task_accounts(task)
-
-            if not task.group_id:
-                raise ValueError("请选择目标群组")
-
-            if task.message_mode == "template":
-                if not task.template_id:
-                    raise ValueError("模板消息必须选择模板")
-            else:
-                if not task.text:
-                    raise ValueError("文本消息必须填写内容")
+            self._validate_task_groups(task)
+            self._validate_task_message(task)
 
             existing_index = next(
                 (

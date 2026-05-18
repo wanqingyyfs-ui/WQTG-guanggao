@@ -7,6 +7,8 @@ from typing import Any
 from app.core.models import (
     ACCOUNT_ROTATE_MODE_ROUND_ROBIN,
     ACCOUNT_ROTATE_MODE_SINGLE,
+    GROUP_ROTATE_MODE_ROUND_ROBIN,
+    GROUP_ROTATE_MODE_SINGLE,
     AccountConfig,
     GroupConfig,
     MESSAGE_MODE_TEXT,
@@ -57,6 +59,15 @@ def _to_int(value: Any, default: int = 0) -> int:
         return default
 
 
+def _to_non_negative_int(value: Any, default: int = 0) -> int:
+    number = _to_int(value, default)
+
+    if number < 0:
+        return 0
+
+    return number
+
+
 def _to_float(value: Any, default: float = 0.0) -> float:
     try:
         if value is None or value == "":
@@ -89,7 +100,7 @@ def _to_str_list(value: Any) -> list[str]:
 
     if isinstance(value, str):
         raw_items = [value]
-    elif isinstance(value, list | tuple | set):
+    elif isinstance(value, (list, tuple, set)):
         raw_items = list(value)
     else:
         return []
@@ -109,11 +120,10 @@ def _to_int_list(value: Any) -> list[int]:
         return []
 
     if isinstance(value, int):
-        return [value]
-
-    if isinstance(value, str):
-        raw_items = [item.strip() for item in value.split(",")]
-    elif isinstance(value, list | tuple | set):
+        raw_items = [value]
+    elif isinstance(value, str):
+        raw_items = [item.strip() for item in value.replace("，", ",").split(",")]
+    elif isinstance(value, (list, tuple, set)):
         raw_items = list(value)
     else:
         return []
@@ -125,9 +135,12 @@ def _to_int_list(value: Any) -> list[int]:
             continue
 
         try:
-            result.append(int(item))
+            number = int(item)
         except (TypeError, ValueError):
             continue
+
+        if number not in result:
+            result.append(number)
 
     return result
 
@@ -145,7 +158,20 @@ def _normalize_account_names(item: dict[str, Any]) -> list[str]:
     return account_names
 
 
-def _normalize_rotate_mode(value: Any) -> str:
+def _normalize_group_ids(item: dict[str, Any]) -> list[str]:
+    group_ids = _to_str_list(item.get("group_ids"))
+    group_id = _to_str(item.get("group_id", "")).strip()
+
+    if not group_ids and group_id:
+        group_ids = [group_id]
+
+    if group_id and group_id not in group_ids:
+        group_ids.insert(0, group_id)
+
+    return group_ids
+
+
+def _normalize_account_rotate_mode(value: Any) -> str:
     rotate_mode = _to_str(value, ACCOUNT_ROTATE_MODE_SINGLE).strip()
 
     if rotate_mode not in {
@@ -153,6 +179,18 @@ def _normalize_rotate_mode(value: Any) -> str:
         ACCOUNT_ROTATE_MODE_ROUND_ROBIN,
     }:
         return ACCOUNT_ROTATE_MODE_SINGLE
+
+    return rotate_mode
+
+
+def _normalize_group_rotate_mode(value: Any) -> str:
+    rotate_mode = _to_str(value, GROUP_ROTATE_MODE_SINGLE).strip()
+
+    if rotate_mode not in {
+        GROUP_ROTATE_MODE_SINGLE,
+        GROUP_ROTATE_MODE_ROUND_ROBIN,
+    }:
+        return GROUP_ROTATE_MODE_SINGLE
 
     return rotate_mode
 
@@ -225,15 +263,16 @@ def load_tasks(file_path: str) -> list[SendTaskConfig]:
 
     for raw_item in data:
         item = _as_dict(raw_item)
+
         account_names = _normalize_account_names(item)
         account_name = _to_str(item.get("account_name", "")).strip()
-
         if not account_name and account_names:
             account_name = account_names[0]
 
-        current_account_index = _to_int(item.get("current_account_index"), 0)
-        if current_account_index < 0:
-            current_account_index = 0
+        group_ids = _normalize_group_ids(item)
+        group_id = _to_str(item.get("group_id", "")).strip()
+        if not group_id and group_ids:
+            group_id = group_ids[0]
 
         tasks.append(
             SendTaskConfig(
@@ -242,21 +281,50 @@ def load_tasks(file_path: str) -> list[SendTaskConfig]:
                 enabled=_to_bool(item.get("enabled"), True),
                 account_name=account_name,
                 account_names=account_names,
-                account_rotate_mode=_normalize_rotate_mode(
+                account_rotate_mode=_normalize_account_rotate_mode(
                     item.get("account_rotate_mode")
                 ),
-                current_account_index=current_account_index,
-                group_id=_to_str(item.get("group_id", "")).strip(),
+                current_account_index=_to_non_negative_int(
+                    item.get("current_account_index"),
+                    0,
+                ),
+                account_delay_seconds=_to_non_negative_int(
+                    item.get("account_delay_seconds"),
+                    0,
+                ),
+                group_id=group_id,
+                group_ids=group_ids,
+                group_rotate_mode=_normalize_group_rotate_mode(
+                    item.get("group_rotate_mode")
+                ),
+                current_group_index=_to_non_negative_int(
+                    item.get("current_group_index"),
+                    0,
+                ),
+                group_delay_seconds=_to_non_negative_int(
+                    item.get("group_delay_seconds"),
+                    0,
+                ),
                 message_mode=_to_str(item.get("message_mode", MESSAGE_MODE_TEXT)),
                 text=_to_str(item.get("text", "")),
                 template_id=_to_str(item.get("template_id", "")).strip(),
                 schedule_mode=_to_str(
                     item.get("schedule_mode", SCHEDULE_MODE_MANUAL)
                 ),
-                interval_seconds=_to_int(item.get("interval_seconds"), 3600),
-                daily_time=_to_str(item.get("daily_time", "09:00")).strip() or "09:00",
-                random_delay_min=_to_int(item.get("random_delay_min"), 0),
-                random_delay_max=_to_int(item.get("random_delay_max"), 0),
+                interval_seconds=max(
+                    1,
+                    _to_int(item.get("interval_seconds"), 3600),
+                ),
+                daily_time=_to_str(item.get("daily_time", "09:00")).strip()
+                or "09:00",
+                random_delay_min=_to_non_negative_int(
+                    item.get("random_delay_min"),
+                    0,
+                ),
+                random_delay_max=_to_non_negative_int(
+                    item.get("random_delay_max"),
+                    0,
+                ),
                 last_run_at=_to_str(item.get("last_run_at", "")).strip(),
                 next_run_at=_to_str(item.get("next_run_at", "")).strip(),
                 remark=_to_str(item.get("remark", "")),
@@ -326,17 +394,20 @@ def load_settings(file_path: str) -> Settings:
             "log_file": _to_str(data.get("log_file", "logs/app.log")),
             "sessions_dir": _to_str(data.get("sessions_dir", "")),
             "scheduler_tick_seconds": _to_float(
-                data.get("scheduler_tick_seconds"), 1.0
+                data.get("scheduler_tick_seconds"),
+                1.0,
             ),
             "max_concurrent_tasks": _to_int(data.get("max_concurrent_tasks"), 1),
             "default_send_interval_seconds": _to_float(
-                data.get("default_send_interval_seconds"), 1.0
+                data.get("default_send_interval_seconds"),
+                1.0,
             ),
             "template_source_account_name": _to_str(
                 data.get("template_source_account_name", "")
             ).strip(),
             "template_source_chat_id": _to_int(
-                data.get("template_source_chat_id"), 0
+                data.get("template_source_chat_id"),
+                0,
             ),
         }
     )

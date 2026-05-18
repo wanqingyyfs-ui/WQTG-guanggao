@@ -6,6 +6,11 @@ from typing import Any
 
 from telethon import utils as telethon_utils
 
+from app.core.models import (
+    TEMPLATE_MESSAGE_TYPE_ALBUM,
+    TEMPLATE_MESSAGE_TYPE_PHOTO,
+    TEMPLATE_MESSAGE_TYPE_TEXT,
+)
 from app.services.template_store_service import TemplateStoreService
 
 
@@ -310,11 +315,21 @@ class TemplateCollector:
             has_media=has_media,
         )
 
-        template.message_type = "album"
+        template.message_type = TEMPLATE_MESSAGE_TYPE_ALBUM
         template.media_count = len(message_ids)
         template.has_media = has_media
 
-        self.store.add_template(template)
+        added = self.store.add_template(template)
+
+        if not added:
+            self._log(
+                "info",
+                f"[模板采集] 相册模板未入库，可能是重复模板或数据不完整 | "
+                f"chat_id={marked_chat_id} | "
+                f"grouped_id={grouped_id} | "
+                f"message_ids={message_ids}",
+            )
+            return
 
         self._log(
             "info",
@@ -361,11 +376,25 @@ class TemplateCollector:
             has_media=has_media,
         )
 
-        template.message_type = "photo" if has_media else "text"
+        template.message_type = (
+            TEMPLATE_MESSAGE_TYPE_PHOTO
+            if has_media
+            else TEMPLATE_MESSAGE_TYPE_TEXT
+        )
         template.media_count = 1 if has_media else 0
         template.has_media = has_media
 
-        self.store.add_template(template)
+        added = self.store.add_template(template)
+
+        if not added:
+            self._log(
+                "info",
+                f"[模板采集] 单条模板未入库，可能是重复模板或数据不完整 | "
+                f"chat_id={marked_chat_id} | "
+                f"message_id={message_id} | "
+                f"has_media={has_media}",
+            )
+            return
 
         self._log(
             "info",
