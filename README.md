@@ -39,6 +39,7 @@
 project/
 ├─ main.py
 ├─ requirements.txt
+├─ requirements-build.txt
 ├─ README.md
 ├─ app.ico
 ├─ 万青TG群发任务.spec
@@ -96,10 +97,16 @@ PowerShell 激活：
 .venv\Scripts\Activate.ps1
 ```
 
-安装依赖：
+安装运行依赖：
 
 ```bash
 pip install -r requirements.txt
+```
+
+如需打包 EXE，再安装打包依赖：
+
+```bash
+pip install -r requirements-build.txt
 ```
 
 ## 启动程序
@@ -110,10 +117,11 @@ python main.py
 
 ## 打包 EXE
 
-安装 PyInstaller：
+先安装运行依赖和打包依赖：
 
 ```bash
-pip install pyinstaller
+pip install -r requirements.txt
+pip install -r requirements-build.txt
 ```
 
 使用 spec 文件打包：
@@ -257,11 +265,3 @@ python -m compileall app main.py
 ```powershell
 Remove-Item -Recurse -Force build, dist -ErrorAction SilentlyContinue
 ```
-
-如果旧 EXE 已经被 Git 跟踪，`.gitignore` 不会自动移除，需要手动执行：
-
-```bash
-git rm --cached "万青TG自动回复.exe"
-```
-
-或者直接从仓库删除旧 EXE 文件。
