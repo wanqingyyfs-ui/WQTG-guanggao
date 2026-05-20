@@ -79,7 +79,7 @@ class MainWindow(QMainWindow):
 
         self.tabs = QTabWidget()
         self.tabs.setDocumentMode(False)
-        self.tabs.setUsesScrollButtons(False)
+        self.tabs.setUsesScrollButtons(True)
         self.tabs.setElideMode(Qt.TextElideMode.ElideNone)
         self.tabs.addTab(self.dashboard_page, "运行总控")
         self.tabs.addTab(self.config_page, "配置管理")
@@ -321,10 +321,10 @@ class MainWindow(QMainWindow):
         try:
             self._ensure_can_modify_sending_data()
             row = self.account_page.get_selected_row()
-            if row < 0 or row >= len(self.accounts):
-                self._show_error("请先选择一个账号")
-                return
-            self.account_form.load_account(self.accounts[row])
+            if 0 <= row < len(self.accounts):
+                self.account_form.load_account(self.accounts[row])
+            else:
+                self.account_form.clear_form()
             self._open_dock(self.account_dock)
         except Exception as exc:
             self._show_error(str(exc))
@@ -342,10 +342,10 @@ class MainWindow(QMainWindow):
         try:
             self._ensure_can_modify_sending_data()
             row = self.group_page.get_selected_row()
-            if row < 0 or row >= len(self.groups):
-                self._show_error("请先选择一个群组")
-                return
-            self.group_form.load_group(self.groups[row])
+            if 0 <= row < len(self.groups):
+                self.group_form.load_group(self.groups[row])
+            else:
+                self.group_form.clear_form()
             self._open_dock(self.group_dock)
         except Exception as exc:
             self._show_error(str(exc))
@@ -364,11 +364,11 @@ class MainWindow(QMainWindow):
         try:
             self._ensure_can_modify_sending_data()
             row = self.task_page.get_selected_row()
-            if row < 0 or row >= len(self.tasks):
-                self._show_error("请先选择一个任务")
-                return
             self.task_form.set_context(self.accounts, self.groups, self.templates, self.settings)
-            self.task_form.load_task(self.tasks[row])
+            if 0 <= row < len(self.tasks):
+                self.task_form.load_task(self.tasks[row])
+            else:
+                self.task_form.clear_form()
             self._open_dock(self.task_dock)
         except Exception as exc:
             self._show_error(str(exc))
@@ -377,10 +377,10 @@ class MainWindow(QMainWindow):
         try:
             self._ensure_can_modify_sending_data()
             row = self.template_page.get_selected_row()
-            if row < 0 or row >= len(self.templates):
-                self._show_error("请先选择一个模板")
-                return
-            self.template_form.load_template(self.templates[row])
+            if 0 <= row < len(self.templates):
+                self.template_form.load_template(self.templates[row])
+            else:
+                self.template_form.clear_form()
             self._open_dock(self.template_dock)
         except Exception as exc:
             self._show_error(str(exc))

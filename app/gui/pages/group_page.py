@@ -128,7 +128,7 @@ class GroupPage(QWidget):
         row = self.get_selected_row()
         has_selection = 0 <= row < len(self.groups)
 
-        self.config_button.setEnabled(has_selection)
+        self.config_button.setEnabled(True)
         self.delete_button.setEnabled(has_selection)
         self.up_button.setEnabled(has_selection and row > 0)
         self.down_button.setEnabled(has_selection and row < len(self.groups) - 1)

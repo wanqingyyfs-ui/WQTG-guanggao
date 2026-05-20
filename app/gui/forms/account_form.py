@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
-    QFormLayout,
+    QGridLayout,
     QHBoxLayout,
+    QLabel,
     QLineEdit,
     QPushButton,
     QVBoxLayout,
@@ -14,7 +15,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.core.models import AccountConfig
-from app.gui.pages.layout_utils import apply_large_inputs, style_form_layout
+from app.gui.pages.layout_utils import apply_large_inputs
 
 
 class AccountForm(QWidget):
@@ -56,14 +57,21 @@ class AccountForm(QWidget):
         self.clear_form()
 
     def _build_ui(self) -> None:
-        form = QFormLayout()
-        style_form_layout(form)
-        form.addRow("账号名称：", self.account_name_edit)
-        form.addRow("API ID：", self.api_id_edit)
-        form.addRow("API Hash：", self.api_hash_edit)
-        form.addRow("手机号：", self.phone_edit)
-        form.addRow("Session 名称：", self.session_name_edit)
-        form.addRow("启用状态：", self.enabled_checkbox)
+        grid = QGridLayout()
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(14)
+        grid.setVerticalSpacing(10)
+        grid.setColumnStretch(1, 1)
+        grid.setColumnStretch(3, 1)
+
+        self._add_labeled_widget(grid, 0, 0, "账号名称：", self.account_name_edit)
+        grid.addWidget(self.enabled_checkbox, 0, 2, 1, 2)
+
+        self._add_labeled_widget(grid, 1, 0, "API ID：", self.api_id_edit)
+        self._add_labeled_widget(grid, 1, 2, "手机号：", self.phone_edit)
+
+        self._add_labeled_widget(grid, 2, 0, "API Hash：", self.api_hash_edit)
+        self._add_labeled_widget(grid, 2, 2, "Session：", self.session_name_edit)
 
         button_layout = QHBoxLayout()
         button_layout.setSpacing(10)
@@ -74,11 +82,24 @@ class AccountForm(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
-        layout.addLayout(form)
+        layout.addLayout(grid)
         layout.addLayout(button_layout)
         layout.addStretch(1)
 
         apply_large_inputs(self)
+
+    @staticmethod
+    def _add_labeled_widget(
+        grid: QGridLayout,
+        row: int,
+        label_column: int,
+        label_text: str,
+        widget: QWidget,
+    ) -> None:
+        label = QLabel(label_text)
+        label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        grid.addWidget(label, row, label_column)
+        grid.addWidget(widget, row, label_column + 1)
 
     def set_defaults(
         self,

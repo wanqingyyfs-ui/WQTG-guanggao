@@ -5,13 +5,11 @@ from typing import Any
 
 from PySide6.QtCore import QTime, Qt, Signal
 from PySide6.QtWidgets import (
-    QAbstractItemView,
     QCheckBox,
-    QFormLayout,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
-    QListWidget,
-    QListWidgetItem,
+    QLineEdit,
     QPlainTextEdit,
     QPushButton,
     QVBoxLayout,
@@ -35,10 +33,9 @@ from app.core.models import (
 )
 from app.gui.pages.layout_utils import (
     apply_large_inputs,
-    style_form_layout,
-    style_list_widget,
     style_text_editor,
 )
+from app.gui.widgets.check_combo_box import CheckComboBox
 from app.gui.widgets.no_wheel import NoWheelComboBox, NoWheelDoubleSpinBox, NoWheelTimeEdit
 
 MAX_SECONDS = 365 * 24 * 60 * 60
@@ -57,31 +54,19 @@ class TaskForm(QWidget):
         self.settings = Settings()
         self._current_task: SendTaskConfig | None = None
 
-        self.name_edit = QPlainTextEdit()
-        self.name_edit.setMaximumHeight(72)
+        self.name_edit = QLineEdit()
         self.name_edit.setPlaceholderText("任务名称")
-        style_text_editor(self.name_edit, 72)
 
         self.enabled_check = QCheckBox("启用任务")
 
-        self.account_list = QListWidget()
-        self.account_list.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
-        style_list_widget(self.account_list, 130)
+        self.account_combo = CheckComboBox()
+        self.account_combo.lineEdit().setPlaceholderText("请选择发送账号")
 
-        self.account_rotate_mode_combo = NoWheelComboBox()
-        self.account_rotate_mode_combo.addItem("单账号", ACCOUNT_ROTATE_MODE_SINGLE)
-        self.account_rotate_mode_combo.addItem("多账号轮询", ACCOUNT_ROTATE_MODE_ROUND_ROBIN)
+        self.group_combo = CheckComboBox()
+        self.group_combo.lineEdit().setPlaceholderText("请选择目标群组")
 
         self.account_delay_min_seconds_spin = self._new_seconds_spin()
         self.account_delay_max_seconds_spin = self._new_seconds_spin()
-
-        self.group_list = QListWidget()
-        self.group_list.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
-        style_list_widget(self.group_list, 130)
-
-        self.group_rotate_mode_combo = NoWheelComboBox()
-        self.group_rotate_mode_combo.addItem("单群组", GROUP_ROTATE_MODE_SINGLE)
-        self.group_rotate_mode_combo.addItem("多群组轮询", GROUP_ROTATE_MODE_ROUND_ROBIN)
 
         self.group_delay_min_seconds_spin = self._new_seconds_spin()
         self.group_delay_max_seconds_spin = self._new_seconds_spin()
@@ -89,14 +74,6 @@ class TaskForm(QWidget):
         self.message_mode_combo = NoWheelComboBox()
         self.message_mode_combo.addItem("模板", MESSAGE_MODE_TEMPLATE)
         self.message_mode_combo.addItem("文本", MESSAGE_MODE_TEXT)
-
-        self.text_edit = QPlainTextEdit()
-        self.text_edit.setPlaceholderText("纯文本消息内容")
-        style_text_editor(self.text_edit, 150)
-
-        self.template_list = QListWidget()
-        self.template_list.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
-        style_list_widget(self.template_list, 130)
 
         self.schedule_mode_combo = NoWheelComboBox()
         self.schedule_mode_combo.addItem("间隔", SCHEDULE_MODE_INTERVAL)
@@ -110,9 +87,16 @@ class TaskForm(QWidget):
         self.daily_time_edit.setDisplayFormat("HH:mm")
         self.daily_time_edit.setTime(QTime(9, 0))
 
+        self.template_combo = CheckComboBox()
+        self.template_combo.lineEdit().setPlaceholderText("请选择模板")
+
+        self.text_edit = QPlainTextEdit()
+        self.text_edit.setPlaceholderText("纯文本消息内容")
+        style_text_editor(self.text_edit, 120)
+
         self.remark_edit = QPlainTextEdit()
         self.remark_edit.setPlaceholderText("备注")
-        style_text_editor(self.remark_edit, 120)
+        style_text_editor(self.remark_edit, 95)
 
         self.add_button = QPushButton("新增")
         self.save_button = QPushButton("保存")
@@ -122,26 +106,42 @@ class TaskForm(QWidget):
         self.clear_form()
 
     def _build_ui(self) -> None:
-        form = QFormLayout()
-        style_form_layout(form)
+        grid = QGridLayout()
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(14)
+        grid.setVerticalSpacing(10)
+        grid.setColumnStretch(1, 1)
+        grid.setColumnStretch(3, 1)
 
-        form.addRow("任务名称：", self.name_edit)
-        form.addRow("启用状态：", self.enabled_check)
-        form.addRow("发送账号池：", self.account_list)
-        form.addRow("账号轮换：", self.account_rotate_mode_combo)
-        form.addRow("账号延迟最小值：", self.account_delay_min_seconds_spin)
-        form.addRow("账号延迟最大值：", self.account_delay_max_seconds_spin)
-        form.addRow("目标群组池：", self.group_list)
-        form.addRow("群组轮换：", self.group_rotate_mode_combo)
-        form.addRow("群组延迟最小值：", self.group_delay_min_seconds_spin)
-        form.addRow("群组延迟最大值：", self.group_delay_max_seconds_spin)
-        form.addRow("消息类型：", self.message_mode_combo)
-        form.addRow("文本内容：", self.text_edit)
-        form.addRow("模板池：", self.template_list)
-        form.addRow("调度模式：", self.schedule_mode_combo)
-        form.addRow("间隔时间：", self.interval_seconds_spin)
-        form.addRow("每日时间：", self.daily_time_edit)
-        form.addRow("备注：", self.remark_edit)
+        self._add_labeled_widget(grid, 0, 0, "任务名称：", self.name_edit)
+        grid.addWidget(self.enabled_check, 0, 2, 1, 2)
+
+        self._add_labeled_widget(grid, 1, 0, "发送账号池：", self.account_combo)
+        self._add_labeled_widget(grid, 1, 2, "目标群组池：", self.group_combo)
+
+        self._add_labeled_widget(grid, 2, 0, "账号延迟最小：", self.account_delay_min_seconds_spin)
+        self._add_labeled_widget(grid, 2, 2, "账号延迟最大：", self.account_delay_max_seconds_spin)
+
+        self._add_labeled_widget(grid, 3, 0, "群组延迟最小：", self.group_delay_min_seconds_spin)
+        self._add_labeled_widget(grid, 3, 2, "群组延迟最大：", self.group_delay_max_seconds_spin)
+
+        self._add_labeled_widget(grid, 4, 0, "消息类型：", self.message_mode_combo)
+        self._add_labeled_widget(grid, 4, 2, "调度模式：", self.schedule_mode_combo)
+
+        self._add_labeled_widget(grid, 5, 0, "间隔时间：", self.interval_seconds_spin)
+        self._add_labeled_widget(grid, 5, 2, "每日时间：", self.daily_time_edit)
+
+        self._add_labeled_widget(grid, 6, 0, "模板池：", self.template_combo)
+
+        text_label = QLabel("文本内容：")
+        text_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
+        grid.addWidget(text_label, 7, 0)
+        grid.addWidget(self.text_edit, 7, 1, 1, 3)
+
+        remark_label = QLabel("备注：")
+        remark_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
+        grid.addWidget(remark_label, 8, 0)
+        grid.addWidget(self.remark_edit, 8, 1, 1, 3)
 
         button_layout = QHBoxLayout()
         button_layout.setSpacing(10)
@@ -152,11 +152,24 @@ class TaskForm(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
-        layout.addLayout(form)
+        layout.addLayout(grid)
         layout.addLayout(button_layout)
         layout.addStretch(1)
 
         apply_large_inputs(self)
+
+    @staticmethod
+    def _add_labeled_widget(
+        grid: QGridLayout,
+        row: int,
+        label_column: int,
+        label_text: str,
+        widget: QWidget,
+    ) -> None:
+        label = QLabel(label_text)
+        label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        grid.addWidget(label, row, label_column)
+        grid.addWidget(widget, row, label_column + 1)
 
     def _connect_signals(self) -> None:
         self.add_button.clicked.connect(self.add_requested.emit)
@@ -186,50 +199,45 @@ class TaskForm(QWidget):
         if settings is not None:
             self.settings = settings
 
-        selected_accounts = self._selected_values(self.account_list)
-        selected_groups = self._selected_values(self.group_list)
-        selected_templates = self._selected_values(self.template_list)
+        selected_accounts = self.account_combo.checked_data()
+        selected_groups = self.group_combo.checked_data()
+        selected_templates = self.template_combo.checked_data()
 
-        self._populate_account_list()
-        self._populate_group_list()
-        self._populate_template_list()
+        self._populate_account_combo()
+        self._populate_group_combo()
+        self._populate_template_combo()
 
-        self._restore_selection(self.account_list, selected_accounts)
-        self._restore_selection(self.group_list, selected_groups)
-        self._restore_selection(self.template_list, selected_templates)
+        self.account_combo.set_checked_data(self._normalize_text_values(selected_accounts))
+        self.group_combo.set_checked_data(self._normalize_text_values(selected_groups))
+        self.template_combo.set_checked_data(self._normalize_text_values(selected_templates))
 
-    def _populate_account_list(self) -> None:
-        self.account_list.clear()
+    def _populate_account_combo(self) -> None:
+        self.account_combo.clear_items()
         for account in self.accounts:
-            item = QListWidgetItem(str(account.account_name or ""))
-            item.setData(Qt.ItemDataRole.UserRole, str(account.account_name or ""))
-            self.account_list.addItem(item)
+            account_name = str(account.account_name or "")
+            self.account_combo.add_check_item(account_name, account_name)
 
-    def _populate_group_list(self) -> None:
-        self.group_list.clear()
+    def _populate_group_combo(self) -> None:
+        self.group_combo.clear_items()
         for group in self.groups:
+            group_id = str(group.group_id or "")
             label = f"{group.group_name} ({group.chat_id})"
-            item = QListWidgetItem(label)
-            item.setData(Qt.ItemDataRole.UserRole, str(group.group_id or ""))
-            self.group_list.addItem(item)
+            self.group_combo.add_check_item(label, group_id)
 
-    def _populate_template_list(self) -> None:
-        self.template_list.clear()
+    def _populate_template_combo(self) -> None:
+        self.template_combo.clear_items()
         for template in self.templates:
-            item = QListWidgetItem(str(template.template_name or template.template_id or ""))
-            item.setData(Qt.ItemDataRole.UserRole, str(template.template_id or ""))
-            self.template_list.addItem(item)
+            template_id = str(template.template_id or "")
+            label = str(template.template_name or template.template_id or "")
+            self.template_combo.add_check_item(label, template_id)
 
     def load_task(self, task: SendTaskConfig) -> None:
         self._current_task = task
 
-        self.name_edit.setPlainText(str(task.task_name or ""))
+        self.name_edit.setText(str(task.task_name or ""))
         self.enabled_check.setChecked(bool(task.enabled))
-        self._restore_selection(self.account_list, self._task_account_names(task))
-        self._set_combo_value(
-            self.account_rotate_mode_combo,
-            str(getattr(task, "account_rotate_mode", ACCOUNT_ROTATE_MODE_SINGLE)),
-        )
+        self.account_combo.set_checked_data(self._task_account_names(task))
+
         self.account_delay_min_seconds_spin.setValue(
             self._ms_to_seconds(getattr(task, "account_delay_min_ms", 0))
         )
@@ -237,11 +245,7 @@ class TaskForm(QWidget):
             self._ms_to_seconds(getattr(task, "account_delay_max_ms", 0))
         )
 
-        self._restore_selection(self.group_list, self._task_group_ids(task))
-        self._set_combo_value(
-            self.group_rotate_mode_combo,
-            str(getattr(task, "group_rotate_mode", GROUP_ROTATE_MODE_SINGLE)),
-        )
+        self.group_combo.set_checked_data(self._task_group_ids(task))
         self.group_delay_min_seconds_spin.setValue(
             self._ms_to_seconds(getattr(task, "group_delay_min_ms", 0))
         )
@@ -251,7 +255,7 @@ class TaskForm(QWidget):
 
         self._set_combo_value(self.message_mode_combo, str(task.message_mode or MESSAGE_MODE_TEMPLATE))
         self.text_edit.setPlainText(str(task.text or ""))
-        self._restore_selection(self.template_list, self._task_template_ids(task))
+        self.template_combo.set_checked_data(self._task_template_ids(task))
         self._set_combo_value(self.schedule_mode_combo, str(task.schedule_mode or SCHEDULE_MODE_INTERVAL))
         self.interval_seconds_spin.setValue(self._ms_to_seconds(getattr(task, "interval_ms", 3600000)))
         self.daily_time_edit.setTime(self._time_from_text(str(task.daily_time or "09:00")))
@@ -264,14 +268,10 @@ class TaskForm(QWidget):
 
         self.name_edit.clear()
         self.enabled_check.setChecked(True)
-        self._clear_selection(self.account_list)
-        self._clear_selection(self.group_list)
-        self._clear_selection(self.template_list)
+        self.account_combo.set_checked_data([])
+        self.group_combo.set_checked_data([])
+        self.template_combo.set_checked_data([])
 
-        self._set_combo_value(
-            self.account_rotate_mode_combo,
-            str(getattr(self.settings, "default_task_account_rotate_mode", ACCOUNT_ROTATE_MODE_SINGLE)),
-        )
         self.account_delay_min_seconds_spin.setValue(
             self._ms_to_seconds(getattr(self.settings, "default_task_account_delay_min_ms", 0))
         )
@@ -279,10 +279,6 @@ class TaskForm(QWidget):
             self._ms_to_seconds(getattr(self.settings, "default_task_account_delay_max_ms", 0))
         )
 
-        self._set_combo_value(
-            self.group_rotate_mode_combo,
-            str(getattr(self.settings, "default_task_group_rotate_mode", GROUP_ROTATE_MODE_SINGLE)),
-        )
         self.group_delay_min_seconds_spin.setValue(
             self._ms_to_seconds(getattr(self.settings, "default_task_group_delay_min_ms", 0))
         )
@@ -325,17 +321,21 @@ class TaskForm(QWidget):
             0,
         )
 
-        account_names = self._selected_values(self.account_list)
-        account_rotate_mode = str(self.account_rotate_mode_combo.currentData() or ACCOUNT_ROTATE_MODE_SINGLE)
-        if account_rotate_mode == ACCOUNT_ROTATE_MODE_SINGLE and account_names:
-            account_names = [account_names[0]]
+        account_names = self._normalize_text_values(self.account_combo.checked_data())
+        account_rotate_mode = (
+            ACCOUNT_ROTATE_MODE_ROUND_ROBIN
+            if len(account_names) > 1
+            else ACCOUNT_ROTATE_MODE_SINGLE
+        )
         account_name = account_names[0] if account_names else ""
         current_account_index = current_account_index % len(account_names) if account_names else 0
 
-        group_ids = self._selected_values(self.group_list)
-        group_rotate_mode = str(self.group_rotate_mode_combo.currentData() or GROUP_ROTATE_MODE_SINGLE)
-        if group_rotate_mode == GROUP_ROTATE_MODE_SINGLE and group_ids:
-            group_ids = [group_ids[0]]
+        group_ids = self._normalize_text_values(self.group_combo.checked_data())
+        group_rotate_mode = (
+            GROUP_ROTATE_MODE_ROUND_ROBIN
+            if len(group_ids) > 1
+            else GROUP_ROTATE_MODE_SINGLE
+        )
         group_id = group_ids[0] if group_ids else ""
         current_group_index = current_group_index % len(group_ids) if group_ids else 0
 
@@ -349,7 +349,7 @@ class TaskForm(QWidget):
         if group_delay_max_ms < group_delay_min_ms:
             raise ValueError("群组延迟最大值不能小于群组延迟最小值")
 
-        template_ids = self._selected_values(self.template_list)
+        template_ids = self._normalize_text_values(self.template_combo.checked_data())
         template_id = template_ids[0] if template_ids else ""
 
         interval_ms = self._seconds_to_ms(self.interval_seconds_spin.value())
@@ -357,7 +357,7 @@ class TaskForm(QWidget):
 
         return SendTaskConfig(
             task_id=task_id,
-            task_name=self.name_edit.toPlainText().strip(),
+            task_name=self.name_edit.text().strip(),
             enabled=self.enabled_check.isChecked(),
             account_name=account_name,
             account_names=account_names,
@@ -391,29 +391,16 @@ class TaskForm(QWidget):
     def _update_message_mode_state(self) -> None:
         mode = self.message_mode_combo.currentData()
         self.text_edit.setEnabled(mode == MESSAGE_MODE_TEXT)
-        self.template_list.setEnabled(mode == MESSAGE_MODE_TEMPLATE)
+        self.template_combo.setEnabled(mode == MESSAGE_MODE_TEMPLATE)
 
     @staticmethod
-    def _selected_values(list_widget: QListWidget) -> list[str]:
+    def _normalize_text_values(values: list[Any]) -> list[str]:
         result: list[str] = []
-        for item in list_widget.selectedItems():
-            value = str(item.data(Qt.ItemDataRole.UserRole) or "").strip()
-            if value and value not in result:
-                result.append(value)
+        for value in values or []:
+            text = str(value or "").strip()
+            if text and text not in result:
+                result.append(text)
         return result
-
-    @staticmethod
-    def _restore_selection(list_widget: QListWidget, values: list[str]) -> None:
-        wanted = {str(value or "").strip() for value in values if str(value or "").strip()}
-        list_widget.clearSelection()
-        for row in range(list_widget.count()):
-            item = list_widget.item(row)
-            value = str(item.data(Qt.ItemDataRole.UserRole) or "").strip()
-            item.setSelected(value in wanted)
-
-    @staticmethod
-    def _clear_selection(list_widget: QListWidget) -> None:
-        list_widget.clearSelection()
 
     @staticmethod
     def _set_combo_value(combo: NoWheelComboBox, value: str) -> None:
