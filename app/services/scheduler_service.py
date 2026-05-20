@@ -587,7 +587,9 @@ class SchedulerService:
     ) -> tuple[int, int]:
         next_position = position + 1
         if next_position >= len(sequence):
-            return 0, 0
+            # 一轮最后一次动作后，仍然执行群组延迟，然后才进入任务间隔时间。
+            # 例如：A1 -账号延迟- B1 -群组延迟- A2 -账号延迟- B2 -群组延迟- 间隔时间- A1。
+            return 0, self._random_delay_ms(group_delay_min_ms, group_delay_max_ms)
 
         account_name, group = sequence[position]
         next_account_name, next_group = sequence[next_position]
@@ -809,10 +811,13 @@ class SchedulerService:
 
         account_rotate_mode = self._get_task_account_rotate_mode(task)
         if account_rotate_mode == ACCOUNT_ROTATE_MODE_SINGLE:
+            task.current_account_index = 0
             return [account_names[0]]
 
-        start_index = self._normalize_current_account_index(task=task, account_count=len(account_names))
-        return account_names[start_index:] + account_names[:start_index]
+        # 最终规则：每个任务回合都必须从任务账号池第一个账号开始，不能用 current_account_index 轮换起点。
+        # 这样 AB + 12 在群组延迟更高时，每一回合都固定是 A1、B1、A2、B2。
+        task.current_account_index = 0
+        return account_names
 
     def _get_effective_task_groups(self, task: SendTaskConfig) -> list[GroupConfig]:
         group_ids = self._get_task_group_ids(task)
@@ -821,9 +826,11 @@ class SchedulerService:
 
         group_rotate_mode = self._get_task_group_rotate_mode(task)
         if group_rotate_mode == GROUP_ROTATE_MODE_ROUND_ROBIN:
-            start_index = self._normalize_current_group_index(task=task, group_count=len(group_ids))
-            group_ids = group_ids[start_index:] + group_ids[:start_index]
+            # 最终规则：每个任务回合都必须从任务群组池第一个群开始，不能用 current_group_index 轮换起点。
+            # 这样新回合不会从群 2 或其它位置开始。
+            task.current_group_index = 0
         else:
+            task.current_group_index = 0
             group_ids = group_ids[:1]
 
         groups: list[GroupConfig] = []
@@ -944,23 +951,11 @@ class SchedulerService:
         account_count: int,
         group_count: int,
     ) -> None:
-        if account_count <= 0:
-            task.current_account_index = 0
-        elif self._get_task_account_rotate_mode(task) == ACCOUNT_ROTATE_MODE_ROUND_ROBIN:
-            task.current_account_index = (
-                self._safe_int(getattr(task, "current_account_index", 0), 0) + 1
-            ) % account_count
-        else:
-            task.current_account_index = 0
-
-        if group_count <= 0:
-            task.current_group_index = 0
-        elif self._get_task_group_rotate_mode(task) == GROUP_ROTATE_MODE_ROUND_ROBIN:
-            task.current_group_index = (
-                self._safe_int(getattr(task, "current_group_index", 0), 0) + 1
-            ) % group_count
-        else:
-            task.current_group_index = 0
+        # 最终规则：任务池顺序只由账号/群组列表本身决定。
+        # 每一轮结束后都重置索引，下一轮固定从账号池第一个账号、群组池第一个群开始。
+        # 不能再把 current_account_index/current_group_index 加 1，否则下一轮会变成 B1、A1、B2、A2。
+        task.current_account_index = 0
+        task.current_group_index = 0
 
     def _get_account_delay_range_ms(self, task: SendTaskConfig) -> tuple[int, int]:
         min_ms = self._safe_non_negative_int(getattr(task, "account_delay_min_ms", 0), 0)
