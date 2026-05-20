@@ -93,13 +93,11 @@ class TaskForm(QWidget):
 
         self.text_edit = QPlainTextEdit()
         self.text_edit.setPlaceholderText("纯文本消息内容")
-        self.text_edit.setMaximumHeight(86)
-        style_text_editor(self.text_edit, 78)
+        style_text_editor(self.text_edit, 58)
 
         self.remark_edit = QPlainTextEdit()
         self.remark_edit.setPlaceholderText("备注")
-        self.remark_edit.setMaximumHeight(76)
-        style_text_editor(self.remark_edit, 68)
+        style_text_editor(self.remark_edit, 118)
 
         self.add_button = QPushButton("新增")
         self.save_button = QPushButton("保存")
@@ -173,6 +171,19 @@ class TaskForm(QWidget):
         layout.addLayout(button_layout)
 
         apply_large_inputs(self)
+        self._apply_compact_text_editor_heights()
+
+    def _apply_compact_text_editor_heights(self) -> None:
+        self.text_edit.setFixedHeight(58)
+        self.text_edit.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Fixed,
+        )
+        self.remark_edit.setFixedHeight(118)
+        self.remark_edit.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Fixed,
+        )
 
     @staticmethod
     def _style_action_button(button: QPushButton) -> None:
