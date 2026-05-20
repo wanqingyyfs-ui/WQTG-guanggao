@@ -2,22 +2,28 @@ from __future__ import annotations
 
 import asyncio
 import random
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
+from typing import AsyncIterator
 
 from app.core.models import (
     ACCOUNT_ROTATE_MODE_ROUND_ROBIN,
     ACCOUNT_ROTATE_MODE_SINGLE,
     GROUP_ROTATE_MODE_ROUND_ROBIN,
     GROUP_ROTATE_MODE_SINGLE,
+    SEND_STATUS_FAILED,
+    SEND_STATUS_SKIPPED,
+    SEND_STATUS_SUCCESS,
     AccountConfig,
     GroupConfig,
     SCHEDULE_MODE_DAILY,
     SCHEDULE_MODE_INTERVAL,
-    SCHEDULE_MODE_MANUAL,
     SendTaskConfig,
     Settings,
+    TemplateConfig,
 )
 from app.services.group_send_service import GroupSendService, SendResult
+from app.services.noise_pool_service import NoisePoolService
 from app.services.task_log_service import TaskLogService
 
 
@@ -27,9 +33,11 @@ class SchedulerService:
         accounts: list[AccountConfig],
         groups: list[GroupConfig],
         tasks: list[SendTaskConfig],
+        templates: list[TemplateConfig],
         settings: Settings,
         client_manager,
         group_send_service: GroupSendService,
+        noise_pool_service: NoisePoolService,
         task_log_service: TaskLogService,
         save_tasks_callback,
         log_func=None,
@@ -37,9 +45,11 @@ class SchedulerService:
         self.accounts = accounts
         self.groups = groups
         self.tasks = tasks
+        self.templates = templates
         self.settings = settings
         self.client_manager = client_manager
         self.group_send_service = group_send_service
+        self.noise_pool_service = noise_pool_service
         self.task_log_service = task_log_service
         self.save_tasks_callback = save_tasks_callback
         self.log_func = log_func
@@ -47,9 +57,7 @@ class SchedulerService:
         self._stop_event = asyncio.Event()
         self._runner_task: asyncio.Task | None = None
         self._running_task_ids: set[str] = set()
-        self._semaphore = asyncio.Semaphore(
-            self._get_max_concurrent_tasks(settings)
-        )
+        self._semaphore: asyncio.Semaphore | None = self._build_semaphore(settings)
 
     def _log(self, level: str, message: str) -> None:
         if callable(self.log_func):
@@ -64,9 +72,50 @@ class SchedulerService:
         except (TypeError, ValueError):
             return default
 
+    @staticmethod
+    def _safe_float(value, default: float = 0.0) -> float:
+        try:
+            if value is None or value == "":
+                return default
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    @classmethod
+    def _safe_non_negative_int(cls, value, default: int = 0) -> int:
+        number = cls._safe_int(value, default)
+
+        if number < 0:
+            return 0
+
+        return number
+
     @classmethod
     def _get_max_concurrent_tasks(cls, settings: Settings) -> int:
-        return max(1, cls._safe_int(settings.max_concurrent_tasks, 1))
+        return cls._safe_non_negative_int(
+            getattr(settings, "max_concurrent_tasks", 0),
+            0,
+        )
+
+    @classmethod
+    def _build_semaphore(cls, settings: Settings) -> asyncio.Semaphore | None:
+        max_concurrent_tasks = cls._get_max_concurrent_tasks(settings)
+
+        if max_concurrent_tasks <= 0:
+            return None
+
+        return asyncio.Semaphore(max_concurrent_tasks)
+
+    @asynccontextmanager
+    async def _concurrency_slot(self) -> AsyncIterator[None]:
+        semaphore = self._semaphore
+
+        if semaphore is None:
+            yield
+            return
+
+        async with semaphore:
+            yield
 
     def _save_tasks_safely(self) -> None:
         try:
@@ -79,15 +128,23 @@ class SchedulerService:
         accounts: list[AccountConfig],
         groups: list[GroupConfig],
         tasks: list[SendTaskConfig],
+        templates: list[TemplateConfig],
         settings: Settings,
+        noise_pool_service: NoisePoolService,
     ) -> None:
+        old_max_concurrent_tasks = self._get_max_concurrent_tasks(self.settings)
+        new_max_concurrent_tasks = self._get_max_concurrent_tasks(settings)
+
         self.accounts = accounts
         self.groups = groups
         self.tasks = tasks
+        self.templates = templates
         self.settings = settings
-        self._semaphore = asyncio.Semaphore(
-            self._get_max_concurrent_tasks(settings)
-        )
+        self.noise_pool_service = noise_pool_service
+        self.group_send_service.noise_pool_service = noise_pool_service
+
+        if old_max_concurrent_tasks != new_max_concurrent_tasks:
+            self._semaphore = self._build_semaphore(settings)
 
     def is_running(self) -> bool:
         return self._runner_task is not None and not self._runner_task.done()
@@ -124,6 +181,7 @@ class SchedulerService:
                 pass
 
         self._runner_task = None
+        self._running_task_ids.clear()
         self._log("info", "群发调度器已停止")
 
     async def run_loop(self) -> None:
@@ -134,8 +192,11 @@ class SchedulerService:
                 self._log("error", f"群发调度循环异常: {exc}")
 
             tick_seconds = max(
-                0.2,
-                float(self.settings.scheduler_tick_seconds or 1.0),
+                0.05,
+                self._safe_float(
+                    getattr(self.settings, "scheduler_tick_seconds", 1.0),
+                    1.0,
+                ),
             )
 
             try:
@@ -150,10 +211,10 @@ class SchedulerService:
         now = datetime.now()
 
         for task in list(self.tasks):
-            if not task.enabled:
-                continue
+            if self._stop_event.is_set():
+                return
 
-            if task.schedule_mode == SCHEDULE_MODE_MANUAL:
+            if not getattr(task, "enabled", True):
                 continue
 
             if task.task_id in self._running_task_ids:
@@ -193,26 +254,15 @@ class SchedulerService:
         if exception is not None:
             self._log("error", f"{task_name} 异常结束: {exception}")
 
-    async def send_task_once(self, task_id: str) -> SendResult | None:
-        task = self._find_task(task_id)
-
-        if task is None:
-            self._log("error", f"手动发送失败，任务不存在 | task_id={task_id}")
-            return None
-
-        return await self._execute_task(task)
-
     async def _execute_scheduled_task(self, task: SendTaskConfig) -> None:
         await self._execute_task(task)
 
     async def _execute_task(self, task: SendTaskConfig) -> SendResult | None:
         self._running_task_ids.add(task.task_id)
-        result: SendResult | None = None
+        last_result: SendResult | None = None
 
         try:
-            async with self._semaphore:
-                await self._apply_random_delay(task)
-
+            async with self._concurrency_slot():
                 account_names = self._get_effective_task_account_names(task)
                 groups = self._get_effective_task_groups(task)
 
@@ -230,68 +280,16 @@ class SchedulerService:
                     )
                     return None
 
-                if self._should_use_matrix_mode(task, account_names, groups):
-                    result = await self._execute_matrix_task(
-                        task=task,
-                        account_names=account_names,
-                        groups=groups,
-                    )
-                    return result
-
-                result = await self._execute_legacy_single_target_task(
+                last_result = await self._execute_matrix_task(
                     task=task,
                     account_names=account_names,
-                    group=groups[0],
+                    groups=groups,
                 )
-                return result
+                return last_result
 
         finally:
             self._mark_task_finished(task)
             self._running_task_ids.discard(task.task_id)
-
-    def _should_use_matrix_mode(
-        self,
-        task: SendTaskConfig,
-        account_names: list[str],
-        groups: list[GroupConfig],
-    ) -> bool:
-        account_rotate_mode = self._get_task_account_rotate_mode(task)
-        group_rotate_mode = self._get_task_group_rotate_mode(task)
-
-        if account_rotate_mode == ACCOUNT_ROTATE_MODE_ROUND_ROBIN:
-            return True
-
-        if group_rotate_mode == GROUP_ROTATE_MODE_ROUND_ROBIN:
-            return True
-
-        if len(account_names) > 1:
-            return True
-
-        if len(groups) > 1:
-            return True
-
-        return False
-
-    async def _execute_legacy_single_target_task(
-        self,
-        task: SendTaskConfig,
-        account_names: list[str],
-        group: GroupConfig,
-    ) -> SendResult | None:
-        account_rotate_mode = self._get_task_account_rotate_mode(task)
-
-        if account_rotate_mode == ACCOUNT_ROTATE_MODE_ROUND_ROBIN:
-            return await self._execute_round_robin_account_for_group(
-                task=task,
-                group=group,
-                account_names=account_names,
-            )
-
-        return await self._execute_single_account_for_group(
-            task=task,
-            group=group,
-            account_names=account_names,
-        )
 
     async def _execute_matrix_task(
         self,
@@ -299,46 +297,49 @@ class SchedulerService:
         account_names: list[str],
         groups: list[GroupConfig],
     ) -> SendResult | None:
-        account_delay_seconds = max(
-            0,
-            self._safe_int(getattr(task, "account_delay_seconds", 0), 0),
+        account_delay_min_ms, account_delay_max_ms = self._get_account_delay_range_ms(
+            task
         )
-        group_delay_seconds = max(
-            0,
-            self._safe_int(getattr(task, "group_delay_seconds", 0), 0),
+        group_delay_min_ms, group_delay_max_ms = self._get_group_delay_range_ms(task)
+        account_initial_delays_ms = self._build_account_initial_delays_ms(
+            account_count=len(account_names),
+            delay_min_ms=account_delay_min_ms,
+            delay_max_ms=account_delay_max_ms,
         )
 
         self._log(
             "info",
-            f"开始二维轮询任务 | task={task.task_name} | "
+            f"开始多账号多群组轮询任务 | task={task.task_name} | "
             f"accounts={len(account_names)} | groups={len(groups)} | "
-            f"account_delay={account_delay_seconds}s | "
-            f"group_delay={group_delay_seconds}s",
+            f"account_delay={account_delay_min_ms}-{account_delay_max_ms}ms | "
+            f"group_delay={group_delay_min_ms}-{group_delay_max_ms}ms | "
+            f"max_concurrent_tasks={self._get_max_concurrent_tasks(self.settings)}",
         )
 
         account_jobs: list[asyncio.Task] = []
 
-        for account_offset, account_name in enumerate(account_names):
-            initial_delay = account_offset * account_delay_seconds
+        for account_index, account_name in enumerate(account_names):
             account_job = asyncio.create_task(
                 self._execute_account_group_pipeline(
                     task=task,
                     account_name=account_name,
-                    account_index=account_offset,
+                    account_index=account_index,
+                    account_count=len(account_names),
                     groups=groups,
-                    initial_delay_seconds=initial_delay,
-                    group_delay_seconds=group_delay_seconds,
+                    initial_delay_ms=account_initial_delays_ms[account_index],
+                    group_delay_min_ms=group_delay_min_ms,
+                    group_delay_max_ms=group_delay_max_ms,
                 ),
                 name=(
                     f"group-send-matrix-{task.task_id}-"
-                    f"account-{account_offset}"
+                    f"account-{account_index}"
                 ),
             )
             account_job.add_done_callback(
                 lambda done_task, task_name=task.task_name, account=account_name: (
                     self._handle_background_task_done(
                         done_task,
-                        f"二维轮询账号任务: {task_name} / {account}",
+                        f"多账号轮询任务: {task_name} / {account}",
                     )
                 )
             )
@@ -355,13 +356,14 @@ class SchedulerService:
         last_result: SendResult | None = None
         success_count = 0
         failed_count = 0
+        skipped_count = 0
 
         for item in collected_results:
             if isinstance(item, Exception):
                 failed_count += 1
                 self._log(
                     "error",
-                    f"二维轮询账号任务异常 | task={task.task_name} | error={item}",
+                    f"多账号轮询任务异常 | task={task.task_name} | error={item}",
                 )
                 continue
 
@@ -371,27 +373,24 @@ class SchedulerService:
             for result in item:
                 last_result = result
 
-                if getattr(result, "status", "") == "success":
+                if getattr(result, "status", "") == SEND_STATUS_SUCCESS:
                     success_count += 1
+                elif getattr(result, "status", "") == SEND_STATUS_SKIPPED:
+                    skipped_count += 1
                 else:
                     failed_count += 1
 
-        self._advance_account_index(
+        self._advance_indexes_after_batch(
             task=task,
-            account_index=len(account_names) - 1,
             account_count=len(account_names),
-        )
-        self._advance_group_index(
-            task=task,
-            group_index=len(groups) - 1,
             group_count=len(groups),
         )
         self._save_tasks_safely()
 
         self._log(
             "info",
-            f"二维轮询任务结束 | task={task.task_name} | "
-            f"success={success_count} | failed={failed_count}",
+            f"多账号多群组轮询任务结束 | task={task.task_name} | "
+            f"success={success_count} | failed={failed_count} | skipped={skipped_count}",
         )
 
         return last_result
@@ -401,19 +400,24 @@ class SchedulerService:
         task: SendTaskConfig,
         account_name: str,
         account_index: int,
+        account_count: int,
         groups: list[GroupConfig],
-        initial_delay_seconds: int,
-        group_delay_seconds: int,
+        initial_delay_ms: int,
+        group_delay_min_ms: int,
+        group_delay_max_ms: int,
     ) -> list[SendResult]:
         results: list[SendResult] = []
 
-        if initial_delay_seconds > 0:
+        if initial_delay_ms > 0:
             self._log(
                 "info",
-                f"账号进入轮询前等待 {initial_delay_seconds} 秒 | "
+                f"账号进入轮询前等待 {initial_delay_ms} 毫秒 | "
                 f"task={task.task_name} | account={account_name}",
             )
-            await asyncio.sleep(initial_delay_seconds)
+            await self._sleep_ms(initial_delay_ms)
+
+        if self._stop_event.is_set():
+            return results
 
         account = self._find_account(account_name)
         if account is None:
@@ -429,7 +433,7 @@ class SchedulerService:
 
             self._log(
                 "error",
-                f"二维轮询账号不存在，已跳过该账号全部群组 | "
+                f"轮询账号不存在，已跳过该账号全部群组 | "
                 f"task={task.task_name} | account={account_name}",
             )
             return results
@@ -447,7 +451,7 @@ class SchedulerService:
 
             self._log(
                 "warning",
-                f"二维轮询账号未启用，已跳过该账号全部群组 | "
+                f"轮询账号未启用，已跳过该账号全部群组 | "
                 f"task={task.task_name} | account={account.account_name}",
             )
             return results
@@ -469,21 +473,29 @@ class SchedulerService:
 
             self._log(
                 "error",
-                f"二维轮询账号启动失败，已跳过该账号全部群组 | "
+                f"轮询账号启动失败，已跳过该账号全部群组 | "
                 f"task={task.task_name} | account={account.account_name} | "
                 f"error={exc}",
             )
             return results
 
         for group_index, group in enumerate(groups):
-            if group_index > 0 and group_delay_seconds > 0:
-                self._log(
-                    "info",
-                    f"账号切换下一个群组前等待 {group_delay_seconds} 秒 | "
-                    f"task={task.task_name} | account={account.account_name} | "
-                    f"next_group={group.group_name}",
+            if self._stop_event.is_set():
+                return results
+
+            if group_index > 0:
+                delay_ms = self._random_delay_ms(
+                    group_delay_min_ms,
+                    group_delay_max_ms,
                 )
-                await asyncio.sleep(group_delay_seconds)
+                if delay_ms > 0:
+                    self._log(
+                        "info",
+                        f"账号切换下一个群组前等待 {delay_ms} 毫秒 | "
+                        f"task={task.task_name} | account={account.account_name} | "
+                        f"next_group={group.group_name}",
+                    )
+                    await self._sleep_ms(delay_ms)
 
             task.account_name = account.account_name
             task.group_id = group.group_id
@@ -492,9 +504,9 @@ class SchedulerService:
 
             self._log(
                 "info",
-                f"二维轮询发送 | task={task.task_name} | "
+                f"轮询发送 | task={task.task_name} | "
                 f"account={account.account_name} | "
-                f"account_index={account_index + 1}/{len(task.account_names or []) or 1} | "
+                f"account_index={account_index + 1}/{account_count} | "
                 f"group={group.group_name} | "
                 f"group_index={group_index + 1}/{len(groups)}",
             )
@@ -505,6 +517,7 @@ class SchedulerService:
                     client=client,
                     group=group,
                     task=task,
+                    settings=self.settings,
                 )
             except Exception as exc:
                 result = self._build_failed_result(
@@ -515,7 +528,7 @@ class SchedulerService:
                 )
                 self._log(
                     "error",
-                    f"二维轮询发送异常 | task={task.task_name} | "
+                    f"轮询发送异常 | task={task.task_name} | "
                     f"account={account.account_name} | group={group.group_name} | "
                     f"error={exc}",
                 )
@@ -525,190 +538,6 @@ class SchedulerService:
 
         return results
 
-    async def _execute_single_account_for_group(
-        self,
-        task: SendTaskConfig,
-        group: GroupConfig,
-        account_names: list[str],
-    ) -> SendResult | None:
-        account_name = (task.account_name or "").strip() or account_names[0]
-        account = self._find_account(account_name)
-
-        if account is None:
-            self._log(
-                "error",
-                f"任务账号不存在 | task={task.task_name} | account={account_name}",
-            )
-            return None
-
-        if not account.enabled:
-            self._log(
-                "warning",
-                f"任务账号未启用，已跳过 | task={task.task_name} | account={account_name}",
-            )
-            return None
-
-        task.account_name = account.account_name
-        task.group_id = group.group_id
-
-        return await self._execute_task_by_account_and_group(
-            task=task,
-            group=group,
-            account=account,
-            account_index=self._account_index_in_pool(
-                account_names,
-                account.account_name,
-            ),
-        )
-
-    async def _execute_round_robin_account_for_group(
-        self,
-        task: SendTaskConfig,
-        group: GroupConfig,
-        account_names: list[str],
-    ) -> SendResult | None:
-        account_count = len(account_names)
-
-        if account_count <= 0:
-            self._log(
-                "error",
-                f"轮换账号池为空 | task={task.task_name}",
-            )
-            return None
-
-        start_index = self._normalize_current_account_index(
-            task=task,
-            account_count=account_count,
-        )
-
-        last_failure_result: SendResult | None = None
-
-        for offset in range(account_count):
-            account_index = (start_index + offset) % account_count
-            account_name = account_names[account_index]
-            account = self._find_account(account_name)
-
-            if account is None:
-                self._log(
-                    "error",
-                    f"轮换账号不存在，尝试下一个 | "
-                    f"task={task.task_name} | account={account_name}",
-                )
-                self._advance_account_index(
-                    task=task,
-                    account_index=account_index,
-                    account_count=account_count,
-                )
-                continue
-
-            if not account.enabled:
-                self._log(
-                    "warning",
-                    f"轮换账号未启用，尝试下一个 | "
-                    f"task={task.task_name} | account={account_name}",
-                )
-                self._advance_account_index(
-                    task=task,
-                    account_index=account_index,
-                    account_count=account_count,
-                )
-                continue
-
-            task.account_name = account.account_name
-            task.group_id = group.group_id
-
-            try:
-                result = await self._execute_task_by_account_and_group(
-                    task=task,
-                    group=group,
-                    account=account,
-                    account_index=account_index,
-                )
-            except Exception as exc:
-                result = self._build_failed_result(
-                    task=task,
-                    group=group,
-                    account_name=account.account_name,
-                    error=str(exc),
-                )
-                self.task_log_service.append_result(result)
-                self._log(
-                    "error",
-                    f"轮换账号执行异常，尝试下一个 | "
-                    f"task={task.task_name} | account={account.account_name} | "
-                    f"error={exc}",
-                )
-
-            self._advance_account_index(
-                task=task,
-                account_index=account_index,
-                account_count=account_count,
-            )
-
-            if result is not None and result.status == "success":
-                self._save_tasks_safely()
-                return result
-
-            last_failure_result = result
-            self._log(
-                "warning",
-                f"轮换账号发送未成功，继续尝试下一个账号 | "
-                f"task={task.task_name} | account={account.account_name} | "
-                f"status={getattr(result, 'status', '')} | "
-                f"error={getattr(result, 'error', '')}",
-            )
-
-        self._save_tasks_safely()
-        self._log(
-            "error",
-            f"轮换账号池全部不可用或全部执行失败 | task={task.task_name}",
-        )
-        return last_failure_result
-
-    async def _execute_task_by_account_and_group(
-        self,
-        task: SendTaskConfig,
-        group: GroupConfig,
-        account: AccountConfig,
-        account_index: int,
-    ) -> SendResult:
-        self._log(
-            "info",
-            f"选择发送账号 | task={task.task_name} | "
-            f"account={account.account_name} | "
-            f"rotate_mode={self._get_task_account_rotate_mode(task)} | "
-            f"account_index={account_index}",
-        )
-
-        try:
-            client = await self.client_manager.ensure_account_started(
-                account.account_name
-            )
-        except Exception as exc:
-            result = self._build_failed_result(
-                task=task,
-                group=group,
-                account_name=account.account_name,
-                error=f"账号启动失败: {exc}",
-            )
-            self.task_log_service.append_result(result)
-            self._log(
-                "error",
-                f"账号启动失败 | task={task.task_name} | "
-                f"account={account.account_name} | error={exc}",
-            )
-            return result
-
-        result = await self.group_send_service.execute_task(
-            account_name=account.account_name,
-            client=client,
-            group=group,
-            task=task,
-        )
-
-        self.task_log_service.append_result(result)
-        return result
-
     def _build_failed_result(
         self,
         task: SendTaskConfig,
@@ -717,6 +546,9 @@ class SchedulerService:
         error: str,
     ) -> SendResult:
         now_text = datetime.now().isoformat(timespec="seconds")
+        account_names = self._get_task_account_names(task)
+        group_ids = self._get_task_group_ids(task)
+        template_ids = self._get_task_template_ids(task)
 
         return SendResult(
             task_id=task.task_id,
@@ -724,7 +556,7 @@ class SchedulerService:
             account_name=account_name,
             group_id=group.group_id,
             chat_id=group.chat_id,
-            status="failed",
+            status=SEND_STATUS_FAILED,
             error=error,
             started_at=now_text,
             finished_at=now_text,
@@ -734,42 +566,27 @@ class SchedulerService:
                 0,
             ),
             selected_account_name=account_name,
-            account_pool=self._get_task_account_names(task),
-            account_pool_size=len(self._get_task_account_names(task)),
-            message_mode=str(getattr(task, "message_mode", "") or ""),
+            account_pool=account_names,
+            account_pool_size=len(account_names),
+            group_rotate_mode=self._get_task_group_rotate_mode(task),
+            group_index=self._safe_int(
+                getattr(task, "current_group_index", 0),
+                0,
+            ),
+            selected_group_id=str(getattr(group, "group_id", "") or ""),
+            selected_group_name=str(getattr(group, "group_name", "") or ""),
+            group_pool=group_ids,
+            group_pool_size=len(group_ids),
             template_id=str(getattr(task, "template_id", "") or ""),
+            template_ids=template_ids,
+            account_delay_min_ms=self._get_account_delay_range_ms(task)[0],
+            account_delay_max_ms=self._get_account_delay_range_ms(task)[1],
+            group_delay_min_ms=self._get_group_delay_range_ms(task)[0],
+            group_delay_max_ms=self._get_group_delay_range_ms(task)[1],
         )
-
-    async def _apply_random_delay(self, task: SendTaskConfig) -> None:
-        delay_min = max(0, self._safe_int(task.random_delay_min, 0))
-        delay_max = max(0, self._safe_int(task.random_delay_max, 0))
-
-        if delay_max < delay_min:
-            delay_min, delay_max = delay_max, delay_min
-
-        if delay_max <= 0:
-            return
-
-        delay_seconds = random.randint(delay_min, delay_max)
-
-        if delay_seconds > 0:
-            self._log(
-                "info",
-                f"任务随机延迟 {delay_seconds} 秒 | task={task.task_name}",
-            )
-            await asyncio.sleep(delay_seconds)
 
     def calculate_next_run(self, task: SendTaskConfig, now: datetime | None = None) -> str:
         now = now or datetime.now()
-
-        if task.schedule_mode == SCHEDULE_MODE_INTERVAL:
-            interval_seconds = max(
-                1,
-                self._safe_int(task.interval_seconds, 3600),
-            )
-            return (now + timedelta(seconds=interval_seconds)).isoformat(
-                timespec="seconds"
-            )
 
         if task.schedule_mode == SCHEDULE_MODE_DAILY:
             hour, minute = self._parse_daily_time(task.daily_time)
@@ -785,20 +602,37 @@ class SchedulerService:
 
             return next_run.isoformat(timespec="seconds")
 
-        return ""
+        interval_ms = self._safe_non_negative_int(
+            getattr(task, "interval_ms", 3600000),
+            3600000,
+        )
+        return (now + timedelta(milliseconds=interval_ms)).isoformat(
+            timespec="seconds"
+        )
 
     def _is_task_due(self, task: SendTaskConfig, now: datetime) -> bool:
+        if task.schedule_mode not in {SCHEDULE_MODE_INTERVAL, SCHEDULE_MODE_DAILY}:
+            task.schedule_mode = SCHEDULE_MODE_INTERVAL
+
         if not task.next_run_at:
-            task.next_run_at = self.calculate_next_run(task, now)
+            if task.schedule_mode == SCHEDULE_MODE_DAILY:
+                task.next_run_at = self.calculate_next_run(task, now)
+                self._save_tasks_safely()
+                try:
+                    return datetime.fromisoformat(task.next_run_at) <= now
+                except ValueError:
+                    return False
+
+            task.next_run_at = now.isoformat(timespec="seconds")
             self._save_tasks_safely()
-            return False
+            return True
 
         try:
             next_run_at = datetime.fromisoformat(task.next_run_at)
         except ValueError:
-            task.next_run_at = self.calculate_next_run(task, now)
+            task.next_run_at = now.isoformat(timespec="seconds")
             self._save_tasks_safely()
-            return False
+            return True
 
         return next_run_at <= now
 
@@ -811,19 +645,40 @@ class SchedulerService:
     def _get_effective_task_account_names(self, task: SendTaskConfig) -> list[str]:
         account_names = self._get_task_account_names(task)
 
-        if self._get_task_account_rotate_mode(task) == ACCOUNT_ROTATE_MODE_SINGLE:
-            if not account_names:
-                return []
-            task.account_name = account_names[0]
-            task.account_names = [account_names[0]]
-            return [account_names[0]]
+        if not account_names:
+            return []
 
-        return account_names
+        account_rotate_mode = self._get_task_account_rotate_mode(task)
+
+        if account_rotate_mode == ACCOUNT_ROTATE_MODE_SINGLE:
+            selected_account_name = account_names[0]
+            task.account_name = selected_account_name
+            task.account_names = [selected_account_name]
+            return [selected_account_name]
+
+        start_index = self._normalize_current_account_index(
+            task=task,
+            account_count=len(account_names),
+        )
+        rotated_account_names = account_names[start_index:] + account_names[:start_index]
+        task.account_name = rotated_account_names[0]
+        return rotated_account_names
 
     def _get_effective_task_groups(self, task: SendTaskConfig) -> list[GroupConfig]:
         group_ids = self._get_task_group_ids(task)
 
-        if self._get_task_group_rotate_mode(task) == GROUP_ROTATE_MODE_SINGLE:
+        if not group_ids:
+            return []
+
+        group_rotate_mode = self._get_task_group_rotate_mode(task)
+
+        if group_rotate_mode == GROUP_ROTATE_MODE_ROUND_ROBIN:
+            start_index = self._normalize_current_group_index(
+                task=task,
+                group_count=len(group_ids),
+            )
+            group_ids = group_ids[start_index:] + group_ids[:start_index]
+        else:
             group_ids = group_ids[:1]
 
         groups: list[GroupConfig] = []
@@ -843,7 +698,6 @@ class SchedulerService:
 
         if groups:
             task.group_id = groups[0].group_id
-            task.group_ids = [group.group_id for group in groups]
 
         return groups
 
@@ -888,6 +742,27 @@ class SchedulerService:
         task.group_ids = group_ids
 
         return group_ids
+
+    def _get_task_template_ids(self, task: SendTaskConfig) -> list[str]:
+        raw_template_ids = getattr(task, "template_ids", []) or []
+        template_ids: list[str] = []
+
+        for raw_template_id in raw_template_ids:
+            template_id = str(raw_template_id or "").strip()
+            if template_id and template_id not in template_ids:
+                template_ids.append(template_id)
+
+        legacy_template_id = str(getattr(task, "template_id", "") or "").strip()
+
+        if legacy_template_id and legacy_template_id not in template_ids:
+            template_ids.insert(0, legacy_template_id)
+
+        if not legacy_template_id and template_ids:
+            task.template_id = template_ids[0]
+
+        task.template_ids = template_ids
+
+        return template_ids
 
     @staticmethod
     def _get_task_account_rotate_mode(task: SendTaskConfig) -> str:
@@ -961,36 +836,97 @@ class SchedulerService:
 
         return current_index
 
-    def _advance_account_index(
+    def _advance_indexes_after_batch(
         self,
         task: SendTaskConfig,
-        account_index: int,
         account_count: int,
+        group_count: int,
     ) -> None:
         if account_count <= 0:
             task.current_account_index = 0
-            return
+        elif self._get_task_account_rotate_mode(task) == ACCOUNT_ROTATE_MODE_ROUND_ROBIN:
+            task.current_account_index = (
+                self._safe_int(getattr(task, "current_account_index", 0), 0) + 1
+            ) % account_count
+        else:
+            task.current_account_index = 0
 
-        task.current_account_index = (account_index + 1) % account_count
-
-    def _advance_group_index(
-        self,
-        task: SendTaskConfig,
-        group_index: int,
-        group_count: int,
-    ) -> None:
         if group_count <= 0:
             task.current_group_index = 0
-            return
+        elif self._get_task_group_rotate_mode(task) == GROUP_ROTATE_MODE_ROUND_ROBIN:
+            task.current_group_index = (
+                self._safe_int(getattr(task, "current_group_index", 0), 0) + 1
+            ) % group_count
+        else:
+            task.current_group_index = 0
 
-        task.current_group_index = (group_index + 1) % group_count
+    def _get_account_delay_range_ms(self, task: SendTaskConfig) -> tuple[int, int]:
+        min_ms = self._safe_non_negative_int(
+            getattr(task, "account_delay_min_ms", 0),
+            0,
+        )
+        max_ms = self._safe_non_negative_int(
+            getattr(task, "account_delay_max_ms", min_ms),
+            min_ms,
+        )
+
+        if max_ms < min_ms:
+            max_ms = min_ms
+
+        return min_ms, max_ms
+
+    def _get_group_delay_range_ms(self, task: SendTaskConfig) -> tuple[int, int]:
+        min_ms = self._safe_non_negative_int(
+            getattr(task, "group_delay_min_ms", 0),
+            0,
+        )
+        max_ms = self._safe_non_negative_int(
+            getattr(task, "group_delay_max_ms", min_ms),
+            min_ms,
+        )
+
+        if max_ms < min_ms:
+            max_ms = min_ms
+
+        return min_ms, max_ms
+
+    def _build_account_initial_delays_ms(
+        self,
+        account_count: int,
+        delay_min_ms: int,
+        delay_max_ms: int,
+    ) -> list[int]:
+        if account_count <= 0:
+            return []
+
+        delays = [0]
+        total_delay_ms = 0
+
+        for _index in range(1, account_count):
+            total_delay_ms += self._random_delay_ms(delay_min_ms, delay_max_ms)
+            delays.append(total_delay_ms)
+
+        return delays
 
     @staticmethod
-    def _account_index_in_pool(account_names: list[str], account_name: str) -> int:
-        try:
-            return account_names.index(account_name)
-        except ValueError:
+    def _random_delay_ms(delay_min_ms: int, delay_max_ms: int) -> int:
+        safe_min = max(0, int(delay_min_ms or 0))
+        safe_max = max(0, int(delay_max_ms or 0))
+
+        if safe_max < safe_min:
+            safe_max = safe_min
+
+        if safe_max <= 0:
             return 0
+
+        return random.randint(safe_min, safe_max)
+
+    @staticmethod
+    async def _sleep_ms(delay_ms: int) -> None:
+        if delay_ms <= 0:
+            return
+
+        await asyncio.sleep(delay_ms / 1000)
 
     @staticmethod
     def _parse_daily_time(daily_time: str) -> tuple[int, int]:
@@ -1022,13 +958,13 @@ class SchedulerService:
         )
 
     def _find_group(self, group_id: str) -> GroupConfig | None:
-        return next(
-            (group for group in self.groups if group.group_id == group_id),
-            None,
-        )
+        safe_group_id = str(group_id or "").strip()
 
-    def _find_task(self, task_id: str) -> SendTaskConfig | None:
         return next(
-            (task for task in self.tasks if task.task_id == task_id),
+            (
+                group
+                for group in self.groups
+                if str(group.group_id or "").strip() == safe_group_id
+            ),
             None,
         )

@@ -35,6 +35,8 @@ class AccountPage(QWidget):
 
         self.accounts: list[AccountConfig] = []
         self.status_map: dict[str, tuple[str, str]] = {}
+        self.default_account_enabled = True
+        self.default_session_name_follow_account = True
 
         self.table = QTableWidget(0, 7)
         self.table.setHorizontalHeaderLabels(
@@ -56,12 +58,13 @@ class AccountPage(QWidget):
 
         self.api_hash_edit = QLineEdit()
         self.api_hash_edit.setPlaceholderText("Telegram API Hash")
+        self.api_hash_edit.setEchoMode(QLineEdit.EchoMode.Password)
 
         self.phone_edit = QLineEdit()
         self.phone_edit.setPlaceholderText("例如：+8613800000000")
 
         self.session_name_edit = QLineEdit()
-        self.session_name_edit.setPlaceholderText("例如：account_01")
+        self.session_name_edit.setPlaceholderText("留空时默认使用账号名称")
 
         self.enabled_checkbox = QCheckBox("启用此账号")
         self.enabled_checkbox.setChecked(True)
@@ -110,7 +113,10 @@ class AccountPage(QWidget):
         top_layout = QVBoxLayout(top_widget)
         top_layout.setContentsMargins(0, 0, 0, 0)
         top_layout.setSpacing(10)
-        top_layout.addWidget(QLabel("账号管理"))
+
+        title_label = QLabel("账号管理")
+        title_label.setObjectName("PageTitleLabel")
+        top_layout.addWidget(title_label)
         top_layout.addWidget(
             make_scroll_area(table_group, minimum_height=240),
             1,
@@ -140,6 +146,17 @@ class AccountPage(QWidget):
         layout.addWidget(splitter)
 
         self.table.itemSelectionChanged.connect(self.load_selected_account)
+        self.account_name_edit.textChanged.connect(self._on_account_name_changed)
+
+    def set_defaults(
+        self,
+        default_account_enabled: bool = True,
+        default_session_name_follow_account: bool = True,
+    ) -> None:
+        self.default_account_enabled = bool(default_account_enabled)
+        self.default_session_name_follow_account = bool(
+            default_session_name_follow_account
+        )
 
     def set_accounts(
         self,
@@ -149,6 +166,7 @@ class AccountPage(QWidget):
         self.accounts = list(accounts or [])
         self.status_map = dict(status_map or {})
         self.refresh_table()
+        self._update_action_buttons()
 
     def refresh_table(self) -> None:
         self.table.setRowCount(len(self.accounts))
@@ -174,6 +192,7 @@ class AccountPage(QWidget):
         row = self.get_selected_row()
 
         if row < 0 or row >= len(self.accounts):
+            self._update_action_buttons()
             return
 
         account = self.accounts[row]
@@ -184,6 +203,7 @@ class AccountPage(QWidget):
         self.phone_edit.setText(str(account.phone))
         self.session_name_edit.setText(str(account.session_name))
         self.enabled_checkbox.setChecked(bool(account.enabled))
+        self._update_action_buttons()
 
     def clear_form(self) -> None:
         self.table.clearSelection()
@@ -193,8 +213,8 @@ class AccountPage(QWidget):
         self.api_hash_edit.clear()
         self.phone_edit.clear()
         self.session_name_edit.clear()
-
-        self.enabled_checkbox.setChecked(True)
+        self.enabled_checkbox.setChecked(bool(self.default_account_enabled))
+        self._update_action_buttons()
 
     def get_selected_row(self) -> int:
         selected_rows = self.table.selectionModel().selectedRows()
@@ -211,7 +231,7 @@ class AccountPage(QWidget):
         phone = self.phone_edit.text().strip()
         session_name = self.session_name_edit.text().strip()
 
-        if not session_name and account_name:
+        if not session_name and account_name and self.default_session_name_follow_account:
             session_name = account_name
 
         return AccountConfig(
@@ -230,6 +250,28 @@ class AccountPage(QWidget):
             return str(self.accounts[row].account_name or "").strip()
 
         return self.account_name_edit.text().strip()
+
+    def _on_account_name_changed(self, value: str) -> None:
+        if not self.default_session_name_follow_account:
+            return
+
+        if self.get_selected_row() >= 0:
+            return
+
+        current_session_name = self.session_name_edit.text().strip()
+
+        if current_session_name:
+            return
+
+        self.session_name_edit.setText(str(value or "").strip())
+
+    def _update_action_buttons(self) -> None:
+        has_selection = 0 <= self.get_selected_row() < len(self.accounts)
+
+        self.delete_button.setEnabled(has_selection)
+        self.login_button.setEnabled(has_selection)
+        self.start_button.setEnabled(has_selection)
+        self.stop_button.setEnabled(has_selection)
 
     @staticmethod
     def _parse_api_id(value: Any) -> int:

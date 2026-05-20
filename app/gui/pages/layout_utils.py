@@ -30,6 +30,7 @@ QSplitter::handle {
     border-top: 1px solid #5f718a;
     border-bottom: 1px solid #5f718a;
     border-radius: 3px;
+    margin: 2px 80px 2px 80px;
 }
 
 QSplitter::handle:hover {
@@ -48,6 +49,7 @@ QSplitter::handle {
     border-left: 1px solid #b8c2d1;
     border-right: 1px solid #b8c2d1;
     border-radius: 3px;
+    margin: 80px 2px 80px 2px;
 }
 
 QSplitter::handle:hover {
@@ -62,16 +64,31 @@ QSplitter::handle:pressed {
 
 GROUP_BOX_QSS = """
 QGroupBox {
+    background: #ffffff;
+    border: 1px solid #e5e7eb;
+    border-radius: 16px;
     margin-top: 26px;
-    padding-top: 22px;
+    padding: 22px 16px 16px 16px;
+    font-weight: 600;
 }
 
 QGroupBox::title {
     subcontrol-origin: margin;
     left: 16px;
     padding: 2px 10px 2px 10px;
+    color: #111827;
+    background: #ffffff;
 }
 """
+
+
+def _safe_non_negative_int(value: int | float | str | None, default: int = 0) -> int:
+    try:
+        if value is None or value == "":
+            return max(0, int(default))
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return max(0, int(default))
 
 
 def style_standard_control(widget: QWidget) -> None:
@@ -86,7 +103,8 @@ def style_text_editor(
     widget: QWidget,
     min_height: int = TEXT_EDIT_MIN_HEIGHT,
 ) -> None:
-    widget.setMinimumHeight(max(0, int(min_height)))
+    widget.setMinimumHeight(_safe_non_negative_int(min_height, TEXT_EDIT_MIN_HEIGHT))
+    widget.setMaximumHeight(16777215)
     widget.setSizePolicy(
         QSizePolicy.Policy.Expanding,
         QSizePolicy.Policy.Expanding,
@@ -97,7 +115,8 @@ def style_list_widget(
     widget: QListWidget,
     min_height: int = LIST_MIN_HEIGHT,
 ) -> None:
-    widget.setMinimumHeight(max(0, int(min_height)))
+    widget.setMinimumHeight(_safe_non_negative_int(min_height, LIST_MIN_HEIGHT))
+    widget.setMaximumHeight(16777215)
     widget.setSizePolicy(
         QSizePolicy.Policy.Expanding,
         QSizePolicy.Policy.Expanding,
@@ -108,6 +127,8 @@ def style_table(table: QTableWidget) -> None:
     table.setAlternatingRowColors(True)
     table.setMinimumHeight(TABLE_MIN_HEIGHT)
     table.setMaximumHeight(16777215)
+    table.setWordWrap(False)
+    table.setShowGrid(True)
     table.setSizePolicy(
         QSizePolicy.Policy.Expanding,
         QSizePolicy.Policy.Expanding,
@@ -130,6 +151,7 @@ def style_form_layout(form_layout: QFormLayout) -> None:
 def style_group_box(group_box: QGroupBox) -> None:
     group_box.setStyleSheet(GROUP_BOX_QSS)
     group_box.setMinimumHeight(0)
+    group_box.setMaximumHeight(16777215)
     group_box.setSizePolicy(
         QSizePolicy.Policy.Expanding,
         QSizePolicy.Policy.Expanding,
@@ -157,7 +179,7 @@ def make_scroll_area(
     scroll_area.setFrameShape(QScrollArea.Shape.NoFrame)
     scroll_area.setHorizontalScrollBarPolicy(horizontal)
     scroll_area.setVerticalScrollBarPolicy(vertical)
-    scroll_area.setMinimumHeight(max(0, int(minimum_height)))
+    scroll_area.setMinimumHeight(_safe_non_negative_int(minimum_height, 0))
     scroll_area.setWidget(widget)
     scroll_area.setSizePolicy(
         QSizePolicy.Policy.Expanding,
@@ -185,9 +207,13 @@ def make_vertical_splitter(
     splitter.setStyleSheet(SPLITTER_QSS)
     splitter.setStretchFactor(0, 1)
     splitter.setStretchFactor(1, 1)
+    splitter.setSizePolicy(
+        QSizePolicy.Policy.Expanding,
+        QSizePolicy.Policy.Expanding,
+    )
 
     if sizes:
-        splitter.setSizes([max(0, int(item)) for item in sizes])
+        splitter.setSizes([_safe_non_negative_int(item, 0) for item in sizes])
     else:
         splitter.setSizes([360, 520])
 
@@ -213,9 +239,13 @@ def make_horizontal_splitter(
     splitter.setStyleSheet(HORIZONTAL_SPLITTER_QSS)
     splitter.setStretchFactor(0, 1)
     splitter.setStretchFactor(1, 1)
+    splitter.setSizePolicy(
+        QSizePolicy.Policy.Expanding,
+        QSizePolicy.Policy.Expanding,
+    )
 
     if sizes:
-        splitter.setSizes([max(0, int(item)) for item in sizes])
+        splitter.setSizes([_safe_non_negative_int(item, 0) for item in sizes])
     else:
         splitter.setSizes([520, 640])
 

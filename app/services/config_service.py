@@ -6,11 +6,13 @@ from pathlib import Path
 from app.core.config_loader import (
     load_accounts,
     load_groups,
+    load_noise_pool,
     load_settings,
     load_tasks,
     load_templates,
     save_accounts,
     save_groups,
+    save_noise_pool,
     save_settings,
     save_tasks,
     save_templates,
@@ -43,7 +45,9 @@ def resolve_base_dir(base_dir: str | Path | None = None) -> Path:
     兼容旧调用：
     - RuntimeService() 默认传入 "."
     - 旧 ConfigService(base_dir=".") 过去实际也是使用 AppData
-    所以这里把 None、空字符串、"." 都解析为 AppData，避免升级后数据目录突然变到项目根目录。
+
+    所以这里把 None、空字符串、"." 都解析为 AppData，
+    避免升级后数据目录突然变到项目根目录。
     """
     if base_dir is None:
         return get_appdata_base_dir()
@@ -72,6 +76,7 @@ class ConfigService:
         self.tasks_path = self.config_dir / "tasks.json"
         self.templates_path = self.config_dir / "templates.json"
         self.settings_path = self.config_dir / "settings.json"
+        self.noise_pool_path = self.config_dir / "noise_pool.json"
 
         self._ensure_structure()
 
@@ -94,6 +99,9 @@ class ConfigService:
         if not self.templates_path.exists():
             save_templates(str(self.templates_path), [])
 
+        if not self.noise_pool_path.exists():
+            save_noise_pool(str(self.noise_pool_path), [])
+
         if not self.settings_path.exists():
             settings = Settings()
             settings.log_file = str(self.logs_dir / "app.log")
@@ -108,14 +116,28 @@ class ConfigService:
         list[SendTaskConfig],
         list[TemplateConfig],
         Settings,
+        list[str],
     ]:
         accounts = load_accounts(str(self.accounts_path))
         groups = load_groups(str(self.groups_path))
         tasks = load_tasks(str(self.tasks_path))
         templates = load_templates(str(self.templates_path))
         settings = load_settings(str(self.settings_path))
+        noise_pool = load_noise_pool(str(self.noise_pool_path))
 
-        return accounts, groups, tasks, templates, settings
+        settings.log_file = str(self.logs_dir / "app.log")
+        settings.sessions_dir = str(self.sessions_dir)
+
+        return accounts, groups, tasks, templates, settings, noise_pool
+
+    def reload_settings(self) -> Settings:
+        settings = load_settings(str(self.settings_path))
+        settings.log_file = str(self.logs_dir / "app.log")
+        settings.sessions_dir = str(self.sessions_dir)
+        return settings
+
+    def load_noise_pool(self) -> list[str]:
+        return load_noise_pool(str(self.noise_pool_path))
 
     def save_accounts(self, accounts: list[AccountConfig]) -> None:
         save_accounts(str(self.accounts_path), accounts)
@@ -133,3 +155,6 @@ class ConfigService:
         settings.log_file = str(self.logs_dir / "app.log")
         settings.sessions_dir = str(self.sessions_dir)
         save_settings(str(self.settings_path), settings)
+
+    def save_noise_pool(self, noise_pool: list[str]) -> None:
+        save_noise_pool(str(self.noise_pool_path), noise_pool)

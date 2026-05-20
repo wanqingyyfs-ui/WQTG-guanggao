@@ -14,6 +14,7 @@ from app.core.telegram_client_manager import TelegramClientManager
 from app.core.template_collector import TemplateCollector
 from app.services.config_service import ConfigService
 from app.services.group_send_service import GroupSendService
+from app.services.noise_pool_service import NoisePoolService
 from app.services.scheduler_service import SchedulerService
 from app.services.task_log_service import TaskLogService
 from app.services.template_service import TemplateSender
@@ -40,6 +41,7 @@ class RuntimeService(QObject):
     account_status_changed = Signal(str, str, str)
     runtime_hint = Signal(str)
     templates_changed = Signal()
+    noise_pool_changed = Signal()
     scheduler_status_changed = Signal(str)
 
     def __init__(self, base_dir: str = "."):
@@ -57,6 +59,7 @@ class RuntimeService(QObject):
             self.tasks,
             self.templates,
             self.settings,
+            self.noise_pool,
         ) = self.config_service.load_all()
 
         self._apply_runtime_paths()
@@ -82,8 +85,14 @@ class RuntimeService(QObject):
             log_func=self._emit_log,
         )
 
+        self.noise_pool_service = NoisePoolService(
+            config_service=self.config_service,
+        )
+        self.noise_pool_service.replace_all(self.noise_pool, save=False)
+
         self.group_send_service = GroupSendService(
             template_sender=self.template_sender,
+            noise_pool_service=self.noise_pool_service,
             log_func=self._emit_log,
         )
 
@@ -108,12 +117,14 @@ class RuntimeService(QObject):
     def _build_templates_signature(
         self,
         templates,
-    ) -> tuple[tuple[str, str, tuple[int, ...], bool], ...]:
+    ) -> tuple[tuple[str, str, str, tuple[int, ...], str, bool], ...]:
         return tuple(
             (
                 str(item.template_id),
                 str(item.template_name),
+                str(item.source_account_name),
                 tuple(int(x) for x in item.source_message_ids),
+                str(item.send_mode),
                 bool(item.enabled),
             )
             for item in templates
@@ -159,6 +170,23 @@ class RuntimeService(QObject):
     def get_scheduler_status(self) -> str:
         return self._scheduler_status
 
+    def is_scheduler_running(self) -> bool:
+        if self._scheduler_status == "running":
+            return True
+
+        scheduler = self._scheduler
+        if scheduler is None:
+            return False
+
+        try:
+            return bool(scheduler.is_running())
+        except Exception:
+            return False
+
+    def ensure_can_modify_sending_data(self) -> None:
+        if self.is_scheduler_running():
+            raise RuntimeError("群发运行中，不能修改会影响发送的数据，请先停止群发调度器")
+
     def get_logs_dir(self) -> Path:
         return self.config_service.logs_dir
 
@@ -169,6 +197,7 @@ class RuntimeService(QObject):
             self.tasks,
             self.templates,
             self.settings,
+            self.noise_pool,
         ) = self.config_service.load_all()
 
         self._apply_runtime_paths()
@@ -176,6 +205,7 @@ class RuntimeService(QObject):
 
         self.template_sender.update_templates(self.templates)
         self.template_collector.settings = self.settings
+        self.noise_pool_service.replace_all(self.noise_pool, save=False)
         self._last_templates_signature = self._build_templates_signature(
             self.templates
         )
@@ -183,39 +213,71 @@ class RuntimeService(QObject):
         self._update_runtime_components()
 
     def sync_templates_from_disk(self) -> bool:
-        _, _, _, latest_templates, latest_settings = self.config_service.load_all()
+        (
+            _latest_accounts,
+            _latest_groups,
+            _latest_tasks,
+            latest_templates,
+            latest_settings,
+            latest_noise_pool,
+        ) = self.config_service.load_all()
         latest_signature = self._build_templates_signature(latest_templates)
+
+        self.settings = latest_settings
+        self.noise_pool = latest_noise_pool
+        self._apply_runtime_paths()
+        self.noise_pool_service.replace_all(self.noise_pool, save=False)
 
         if latest_signature == self._last_templates_signature:
             return False
 
         self.templates = latest_templates
-        self.settings = latest_settings
-        self._apply_runtime_paths()
 
         self.template_sender.update_templates(self.templates)
         self.template_collector.settings = self.settings
         self._last_templates_signature = latest_signature
 
         self.templates_changed.emit()
+        self._update_runtime_components()
+        return True
+
+    def sync_noise_pool_from_disk(self) -> bool:
+        latest_noise_pool = self.config_service.load_noise_pool()
+
+        if list(latest_noise_pool) == list(self.noise_pool):
+            return False
+
+        self.noise_pool = list(latest_noise_pool)
+        self.noise_pool_service.replace_all(self.noise_pool, save=False)
+        self.noise_pool_changed.emit()
+        self._update_runtime_components()
         return True
 
     def save_accounts(self, accounts) -> None:
+        self.ensure_can_modify_sending_data()
         self.accounts = list(accounts)
         self.config_service.save_accounts(self.accounts)
         self._update_runtime_components()
 
     def save_groups(self, groups) -> None:
+        self.ensure_can_modify_sending_data()
         self.groups = list(groups)
         self.config_service.save_groups(self.groups)
         self._update_runtime_components()
 
     def save_tasks(self, tasks) -> None:
+        self.ensure_can_modify_sending_data()
+        self.tasks = list(tasks)
+        self.config_service.save_tasks(self.tasks)
+        self._update_runtime_components()
+
+    def save_tasks_from_runtime(self, tasks) -> None:
         self.tasks = list(tasks)
         self.config_service.save_tasks(self.tasks)
         self._update_runtime_components()
 
     def save_templates(self, templates) -> None:
+        self.ensure_can_modify_sending_data()
         self.templates = list(templates)
         self.config_service.save_templates(self.templates)
         self.template_sender.update_templates(self.templates)
@@ -226,12 +288,21 @@ class RuntimeService(QObject):
         self._update_runtime_components()
 
     def save_settings(self, settings) -> None:
+        self.ensure_can_modify_sending_data()
         self.settings = settings
         self._apply_runtime_paths()
         self.config_service.save_settings(self.settings)
         self._sync_logger_level()
 
         self.template_collector.settings = self.settings
+        self._update_runtime_components()
+
+    def save_noise_pool(self, noise_pool: list[str]) -> None:
+        self.ensure_can_modify_sending_data()
+        self.noise_pool = list(noise_pool)
+        self.noise_pool_service.replace_all(self.noise_pool, save=True)
+        self.noise_pool = self.noise_pool_service.get_all()
+        self.noise_pool_changed.emit()
         self._update_runtime_components()
 
     def _update_runtime_components(self) -> None:
@@ -241,12 +312,18 @@ class RuntimeService(QObject):
                 settings=self.settings,
             )
 
+        self.template_sender.update_templates(self.templates)
+        self.template_collector.settings = self.settings
+        self.noise_pool_service.replace_all(self.noise_pool, save=False)
+
         if self._scheduler is not None:
             self._scheduler.update_configuration(
                 accounts=self.accounts,
                 groups=self.groups,
                 tasks=self.tasks,
+                templates=self.templates,
                 settings=self.settings,
+                noise_pool_service=self.noise_pool_service,
             )
 
     def _thread_main(self) -> None:
@@ -267,11 +344,13 @@ class RuntimeService(QObject):
                 accounts=self.accounts,
                 groups=self.groups,
                 tasks=self.tasks,
+                templates=self.templates,
                 settings=self.settings,
                 client_manager=self._manager,
                 group_send_service=self.group_send_service,
+                noise_pool_service=self.noise_pool_service,
                 task_log_service=self.task_log_service,
-                save_tasks_callback=self.save_tasks,
+                save_tasks_callback=self.save_tasks_from_runtime,
                 log_func=self._emit_log,
             )
 
@@ -438,11 +517,6 @@ class RuntimeService(QObject):
         except Exception:
             self._emit_scheduler_status("error")
             raise
-
-    def send_task_once(self, task_id: str) -> None:
-        self.reload_config_cache()
-        scheduler = self._get_scheduler()
-        self._submit_coroutine(scheduler.send_task_once(task_id))
 
     def get_running_client(self, account_name: str):
         manager = self._get_manager()

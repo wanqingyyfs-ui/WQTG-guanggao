@@ -8,7 +8,6 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
-    QComboBox,
     QFormLayout,
     QGridLayout,
     QGroupBox,
@@ -29,10 +28,12 @@ from app.core.models import (
     TEMPLATE_MESSAGE_TYPE_ALBUM,
     TEMPLATE_MESSAGE_TYPE_PHOTO,
     TEMPLATE_MESSAGE_TYPE_TEXT,
+    TEMPLATE_SEND_MODE_CLONE,
     TEMPLATE_SEND_MODE_FORWARD,
     TemplateConfig,
 )
 from app.gui.pages.layout_utils import (
+    HORIZONTAL_SPLITTER_QSS,
     apply_large_inputs,
     make_scroll_area,
     make_vertical_splitter,
@@ -41,6 +42,7 @@ from app.gui.pages.layout_utils import (
     style_table,
     style_text_editor,
 )
+from app.gui.widgets.no_wheel import NoWheelComboBox
 
 
 class TemplatePage(QWidget):
@@ -82,13 +84,14 @@ class TemplatePage(QWidget):
         self.created_at_edit = QLineEdit()
         self.created_at_edit.setReadOnly(True)
 
-        self.message_type_combo = QComboBox()
-        self.message_type_combo.addItem("text", TEMPLATE_MESSAGE_TYPE_TEXT)
-        self.message_type_combo.addItem("photo", TEMPLATE_MESSAGE_TYPE_PHOTO)
-        self.message_type_combo.addItem("album", TEMPLATE_MESSAGE_TYPE_ALBUM)
+        self.message_type_combo = NoWheelComboBox()
+        self.message_type_combo.addItem("文本", TEMPLATE_MESSAGE_TYPE_TEXT)
+        self.message_type_combo.addItem("单图/单媒体", TEMPLATE_MESSAGE_TYPE_PHOTO)
+        self.message_type_combo.addItem("相册/多消息", TEMPLATE_MESSAGE_TYPE_ALBUM)
 
-        self.send_mode_combo = QComboBox()
-        self.send_mode_combo.addItem("forward", TEMPLATE_SEND_MODE_FORWARD)
+        self.send_mode_combo = NoWheelComboBox()
+        self.send_mode_combo.addItem("转发 forward", TEMPLATE_SEND_MODE_FORWARD)
+        self.send_mode_combo.addItem("克隆 clone", TEMPLATE_SEND_MODE_CLONE)
 
         self.preview_text_edit = QTextEdit()
         self.raw_text_edit = QTextEdit()
@@ -154,24 +157,7 @@ class TemplatePage(QWidget):
         bottom_splitter.setStretchFactor(0, 4)
         bottom_splitter.setStretchFactor(1, 5)
         bottom_splitter.setSizes([520, 640])
-
-        bottom_splitter.setStyleSheet("""
-        QSplitter::handle {
-            background-color: #d7dde7;
-            border-left: 1px solid #b8c2d1;
-            border-right: 1px solid #b8c2d1;
-            margin: 80px 2px 80px 2px;
-            border-radius: 3px;
-        }
-
-        QSplitter::handle:hover {
-            background-color: #9fb0c7;
-        }
-
-        QSplitter::handle:pressed {
-            background-color: #7387a3;
-        }
-        """)
+        bottom_splitter.setStyleSheet(HORIZONTAL_SPLITTER_QSS)
 
         self.add_button = QPushButton("新增模板")
         self.save_button = QPushButton("保存模板")
@@ -199,7 +185,10 @@ class TemplatePage(QWidget):
         top_layout = QVBoxLayout(top_widget)
         top_layout.setContentsMargins(0, 0, 0, 0)
         top_layout.setSpacing(10)
-        top_layout.addWidget(QLabel("模板管理"))
+
+        title_label = QLabel("模板管理")
+        title_label.setObjectName("PageTitleLabel")
+        top_layout.addWidget(title_label)
         top_layout.addWidget(make_scroll_area(table_group, minimum_height=240), 1)
 
         bottom_content = QWidget()
@@ -265,12 +254,12 @@ class TemplatePage(QWidget):
             self.table.setItem(
                 row,
                 3,
-                QTableWidgetItem(str(template.message_type or "")),
+                QTableWidgetItem(self._message_type_label(template.message_type)),
             )
             self.table.setItem(
                 row,
                 4,
-                QTableWidgetItem(str(template.send_mode or "")),
+                QTableWidgetItem(self._send_mode_label(template.send_mode)),
             )
             self.table.setItem(
                 row,
@@ -309,7 +298,7 @@ class TemplatePage(QWidget):
         )
         self._restore_combo_value(
             self.send_mode_combo,
-            TEMPLATE_SEND_MODE_FORWARD,
+            self._safe_send_mode(template.send_mode),
         )
 
         self.preview_text_edit.setPlainText(str(template.preview_text or ""))
@@ -368,7 +357,7 @@ class TemplatePage(QWidget):
         )
 
         message_type = self._safe_message_type(self.message_type_combo.currentData())
-        send_mode = TEMPLATE_SEND_MODE_FORWARD
+        send_mode = self._safe_send_mode(self.send_mode_combo.currentData())
 
         raw_text = self.raw_text_edit.toPlainText().strip()
         preview_text = self.preview_text_edit.toPlainText().strip()
@@ -390,12 +379,15 @@ class TemplatePage(QWidget):
         )
 
         preview_images = []
+        has_custom_emoji = False
+
         if selected_template is not None:
             preview_images = [
                 str(item)
                 for item in selected_template.preview_images
                 if str(item).strip()
             ]
+            has_custom_emoji = bool(selected_template.has_custom_emoji)
 
         created_at = self.created_at_edit.text().strip()
         if not created_at:
@@ -412,11 +404,7 @@ class TemplatePage(QWidget):
             send_mode=send_mode,
             preview_text=preview_text,
             raw_text=raw_text,
-            has_custom_emoji=(
-                selected_template.has_custom_emoji
-                if selected_template is not None
-                else False
-            ),
+            has_custom_emoji=has_custom_emoji,
             has_media=has_media,
             media_count=media_count,
             preview_images=preview_images,
@@ -459,7 +447,7 @@ class TemplatePage(QWidget):
         return None
 
     @staticmethod
-    def _restore_combo_value(combo: QComboBox, value: Any) -> None:
+    def _restore_combo_value(combo: NoWheelComboBox, value: Any) -> None:
         index = combo.findData(value)
         if index >= 0:
             combo.setCurrentIndex(index)
@@ -476,6 +464,18 @@ class TemplatePage(QWidget):
             return TEMPLATE_MESSAGE_TYPE_TEXT
 
         return message_type
+
+    @staticmethod
+    def _safe_send_mode(value: Any) -> str:
+        send_mode = str(value or TEMPLATE_SEND_MODE_FORWARD).strip()
+
+        if send_mode not in {
+            TEMPLATE_SEND_MODE_FORWARD,
+            TEMPLATE_SEND_MODE_CLONE,
+        }:
+            return TEMPLATE_SEND_MODE_FORWARD
+
+        return send_mode
 
     @staticmethod
     def _parse_chat_id(value: Any) -> int:
@@ -535,7 +535,7 @@ class TemplatePage(QWidget):
             raw_items = [value]
         elif isinstance(value, str):
             raw_items = value.replace("，", ",").split(",")
-        elif isinstance(value, list | tuple | set):
+        elif isinstance(value, (list, tuple, set)):
             raw_items = list(value)
         else:
             return []
@@ -585,3 +585,26 @@ class TemplatePage(QWidget):
             return max(0, int(template.media_count))
         except (TypeError, ValueError):
             return 0
+
+    @staticmethod
+    def _message_type_label(value: Any) -> str:
+        message_type = TemplatePage._safe_message_type(value)
+
+        label_map = {
+            TEMPLATE_MESSAGE_TYPE_TEXT: "文本",
+            TEMPLATE_MESSAGE_TYPE_PHOTO: "单图/单媒体",
+            TEMPLATE_MESSAGE_TYPE_ALBUM: "相册/多消息",
+        }
+
+        return label_map.get(message_type, message_type)
+
+    @staticmethod
+    def _send_mode_label(value: Any) -> str:
+        send_mode = TemplatePage._safe_send_mode(value)
+
+        label_map = {
+            TEMPLATE_SEND_MODE_FORWARD: "转发",
+            TEMPLATE_SEND_MODE_CLONE: "克隆",
+        }
+
+        return label_map.get(send_mode, send_mode)

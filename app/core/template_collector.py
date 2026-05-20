@@ -6,10 +6,16 @@ from typing import Any
 
 from telethon import utils as telethon_utils
 
+try:
+    from telethon.tl.types import MessageEntityCustomEmoji
+except Exception:
+    MessageEntityCustomEmoji = None
+
 from app.core.models import (
     TEMPLATE_MESSAGE_TYPE_ALBUM,
     TEMPLATE_MESSAGE_TYPE_PHOTO,
     TEMPLATE_MESSAGE_TYPE_TEXT,
+    TEMPLATE_SEND_MODE_FORWARD,
 )
 from app.services.template_store_service import TemplateStoreService
 
@@ -55,6 +61,29 @@ class TemplateCollector:
     @staticmethod
     def _has_media(message) -> bool:
         return bool(getattr(message, "media", None))
+
+    @staticmethod
+    def _message_entities(message) -> list[Any]:
+        entities = getattr(message, "entities", None)
+
+        if entities is None:
+            entities = getattr(message, "formatting_entities", None)
+
+        if not entities:
+            return []
+
+        return list(entities)
+
+    @staticmethod
+    def _has_custom_emoji(message) -> bool:
+        if MessageEntityCustomEmoji is None:
+            return False
+
+        for entity in TemplateCollector._message_entities(message):
+            if isinstance(entity, MessageEntityCustomEmoji):
+                return True
+
+        return False
 
     @staticmethod
     def _chat_title(chat) -> str:
@@ -123,11 +152,12 @@ class TemplateCollector:
 
     async def handle(self, account_name: str, client, event) -> None:
         """
-        只采集：
-        1. 指定监听账号
-        2. 指定素材群
-        3. 有文本或媒体的新消息
-        4. 包含自己发出的消息
+        模板采集规则：
+        1. 如果配置了素材账号，只采集该账号收到的新消息；
+        2. 必须配置素材群 Chat ID；
+        3. 只采集素材群内有文本或媒体的消息；
+        4. 相册消息按 grouped_id 聚合后保存为 album 模板；
+        5. 单条媒体保存为 photo 模板，纯文本保存为 text 模板。
         """
         safe_account_name = str(account_name or "").strip()
 
@@ -278,18 +308,7 @@ class TemplateCollector:
         messages = self.album_cache.pop(album_key, [])
         self.album_tasks.pop(album_key, None)
 
-        unique_messages: dict[int, Any] = {}
-
-        for message in messages:
-            message_id = self._message_id(message)
-
-            if message_id > 0:
-                unique_messages[message_id] = message
-
-        ordered_messages = [
-            unique_messages[message_id]
-            for message_id in sorted(unique_messages)
-        ]
+        ordered_messages = self._deduplicate_and_sort_messages(messages)
 
         if not ordered_messages:
             return
@@ -297,6 +316,10 @@ class TemplateCollector:
         message_ids = [self._message_id(message) for message in ordered_messages]
         text = self._album_text(ordered_messages)
         has_media = any(self._has_media(message) for message in ordered_messages)
+        has_custom_emoji = any(
+            self._has_custom_emoji(message)
+            for message in ordered_messages
+        )
 
         if not text and not has_media:
             self._log(
@@ -316,8 +339,11 @@ class TemplateCollector:
         )
 
         template.message_type = TEMPLATE_MESSAGE_TYPE_ALBUM
+        template.send_mode = TEMPLATE_SEND_MODE_FORWARD
         template.media_count = len(message_ids)
         template.has_media = has_media
+        template.has_custom_emoji = has_custom_emoji
+        template.enabled = True
 
         added = self.store.add_template(template)
 
@@ -336,8 +362,24 @@ class TemplateCollector:
             f"[模板采集] 相册模板已入库 | "
             f"chat_id={marked_chat_id} | "
             f"grouped_id={grouped_id} | "
-            f"message_ids={message_ids}",
+            f"message_ids={message_ids} | "
+            f"has_custom_emoji={has_custom_emoji}",
         )
+
+    @staticmethod
+    def _deduplicate_and_sort_messages(messages: list[Any]) -> list[Any]:
+        unique_messages: dict[int, Any] = {}
+
+        for message in messages:
+            message_id = TemplateCollector._message_id(message)
+
+            if message_id > 0:
+                unique_messages[message_id] = message
+
+        return [
+            unique_messages[message_id]
+            for message_id in sorted(unique_messages)
+        ]
 
     def _album_text(self, messages: list[Any]) -> str:
         for message in reversed(messages):
@@ -358,6 +400,7 @@ class TemplateCollector:
         message_id = self._message_id(message)
         text = self._extract_message_text(message)
         has_media = self._has_media(message)
+        has_custom_emoji = self._has_custom_emoji(message)
 
         if not text and not has_media:
             self._log(
@@ -381,8 +424,11 @@ class TemplateCollector:
             if has_media
             else TEMPLATE_MESSAGE_TYPE_TEXT
         )
+        template.send_mode = TEMPLATE_SEND_MODE_FORWARD
         template.media_count = 1 if has_media else 0
         template.has_media = has_media
+        template.has_custom_emoji = has_custom_emoji
+        template.enabled = True
 
         added = self.store.add_template(template)
 
@@ -401,5 +447,6 @@ class TemplateCollector:
             f"[模板采集] 单条模板已入库 | "
             f"chat_id={marked_chat_id} | "
             f"message_id={message_id} | "
-            f"has_media={has_media}",
+            f"has_media={has_media} | "
+            f"has_custom_emoji={has_custom_emoji}",
         )

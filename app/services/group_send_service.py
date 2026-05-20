@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import random
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -18,11 +19,23 @@ from app.core.models import (
     ACCOUNT_ROTATE_MODE_SINGLE,
     GROUP_ROTATE_MODE_ROUND_ROBIN,
     GROUP_ROTATE_MODE_SINGLE,
-    GroupConfig,
+    LOG_MESSAGE_MODE_NOISE,
+    LOG_MESSAGE_MODE_SKIP,
+    LOG_MESSAGE_MODE_TEMPLATE,
+    LOG_MESSAGE_MODE_TEXT,
     MESSAGE_MODE_TEMPLATE,
     MESSAGE_MODE_TEXT,
+    SEND_DECISION_AD,
+    SEND_DECISION_NOISE,
+    SEND_DECISION_SKIP,
+    SEND_STATUS_FAILED,
+    SEND_STATUS_SKIPPED,
+    SEND_STATUS_SUCCESS,
+    GroupConfig,
     SendTaskConfig,
+    Settings,
 )
+from app.services.noise_pool_service import NoisePoolService
 from app.services.template_service import TemplateSender
 
 
@@ -38,6 +51,17 @@ class SendResult:
     started_at: str = ""
     finished_at: str = ""
 
+    decision: str = SEND_DECISION_AD
+    message_mode: str = LOG_MESSAGE_MODE_TEMPLATE
+    selected_template_id: str = ""
+    template_id: str = ""
+    template_ids: list[str] = field(default_factory=list)
+    noise_text_preview: str = ""
+
+    ad_probability: int = 75
+    noise_probability: int = 22
+    skip_probability: int = 3
+
     rotate_mode: str = ACCOUNT_ROTATE_MODE_SINGLE
     account_index: int = 0
     selected_account_name: str = ""
@@ -51,12 +75,14 @@ class SendResult:
     group_pool: list[str] = field(default_factory=list)
     group_pool_size: int = 0
 
+    account_delay_min_ms: int = 0
+    account_delay_max_ms: int = 0
+    group_delay_min_ms: int = 0
+    group_delay_max_ms: int = 0
+
     account_delay_seconds: int = 0
     group_delay_seconds: int = 0
     flood_wait_seconds: int = 0
-
-    message_mode: str = MESSAGE_MODE_TEXT
-    template_id: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -69,6 +95,15 @@ class SendResult:
             "error": self.error,
             "started_at": self.started_at,
             "finished_at": self.finished_at,
+            "decision": self.decision,
+            "message_mode": self.message_mode,
+            "selected_template_id": self.selected_template_id,
+            "template_id": self.template_id,
+            "template_ids": self.template_ids,
+            "noise_text_preview": self.noise_text_preview,
+            "ad_probability": self.ad_probability,
+            "noise_probability": self.noise_probability,
+            "skip_probability": self.skip_probability,
             "rotate_mode": self.rotate_mode,
             "account_index": self.account_index,
             "selected_account_name": self.selected_account_name,
@@ -80,11 +115,13 @@ class SendResult:
             "selected_group_name": self.selected_group_name,
             "group_pool": self.group_pool,
             "group_pool_size": self.group_pool_size,
+            "account_delay_min_ms": self.account_delay_min_ms,
+            "account_delay_max_ms": self.account_delay_max_ms,
+            "group_delay_min_ms": self.group_delay_min_ms,
+            "group_delay_max_ms": self.group_delay_max_ms,
             "account_delay_seconds": self.account_delay_seconds,
             "group_delay_seconds": self.group_delay_seconds,
             "flood_wait_seconds": self.flood_wait_seconds,
-            "message_mode": self.message_mode,
-            "template_id": self.template_id,
         }
 
 
@@ -92,9 +129,11 @@ class GroupSendService:
     def __init__(
         self,
         template_sender: TemplateSender,
+        noise_pool_service: NoisePoolService,
         log_func=None,
     ):
         self.template_sender = template_sender
+        self.noise_pool_service = noise_pool_service
         self.log_func = log_func
 
     def _log(self, level: str, message: str) -> None:
@@ -120,6 +159,40 @@ class GroupSendService:
 
         if number < 0:
             return 0
+
+        return number
+
+    @staticmethod
+    def _safe_text_list(value: Any) -> list[str]:
+        if value is None:
+            return []
+
+        if isinstance(value, str):
+            raw_items = [value]
+        elif isinstance(value, (list, tuple, set)):
+            raw_items = list(value)
+        else:
+            return []
+
+        result: list[str] = []
+
+        for item in raw_items:
+            text = str(item or "").strip()
+
+            if text and text not in result:
+                result.append(text)
+
+        return result
+
+    @classmethod
+    def _safe_probability(cls, value: Any, default: int) -> int:
+        number = cls._safe_int(value, default)
+
+        if number < 0:
+            return 0
+
+        if number > 100:
+            return 100
 
         return number
 
@@ -195,6 +268,23 @@ class GroupSendService:
 
         return group_pool
 
+    @staticmethod
+    def _task_template_pool(task: SendTaskConfig) -> list[str]:
+        template_pool: list[str] = []
+
+        for raw_template_id in getattr(task, "template_ids", []) or []:
+            value = str(raw_template_id or "").strip()
+
+            if value and value not in template_pool:
+                template_pool.append(value)
+
+        legacy_template_id = str(getattr(task, "template_id", "") or "").strip()
+
+        if legacy_template_id and legacy_template_id not in template_pool:
+            template_pool.insert(0, legacy_template_id)
+
+        return template_pool
+
     def _account_index(
         self,
         task: SendTaskConfig,
@@ -242,10 +332,12 @@ class GroupSendService:
         account_name: str,
         group: GroupConfig,
         task: SendTaskConfig,
+        settings: Settings,
         started_at: str,
     ) -> SendResult:
         account_pool = self._task_account_pool(task, account_name)
         group_pool = self._task_group_pool(task, group)
+        template_pool = self._task_template_pool(task)
 
         account_index = self._account_index(
             task=task,
@@ -258,14 +350,50 @@ class GroupSendService:
             group_pool=group_pool,
         )
 
+        account_delay_min_ms = self._safe_non_negative_int(
+            getattr(task, "account_delay_min_ms", 0),
+            0,
+        )
+        account_delay_max_ms = self._safe_non_negative_int(
+            getattr(task, "account_delay_max_ms", account_delay_min_ms),
+            account_delay_min_ms,
+        )
+        if account_delay_max_ms < account_delay_min_ms:
+            account_delay_max_ms = account_delay_min_ms
+
+        group_delay_min_ms = self._safe_non_negative_int(
+            getattr(task, "group_delay_min_ms", 0),
+            0,
+        )
+        group_delay_max_ms = self._safe_non_negative_int(
+            getattr(task, "group_delay_max_ms", group_delay_min_ms),
+            group_delay_min_ms,
+        )
+        if group_delay_max_ms < group_delay_min_ms:
+            group_delay_max_ms = group_delay_min_ms
+
         return SendResult(
             task_id=task.task_id,
             task_name=task.task_name,
             account_name=account_name,
             group_id=group.group_id,
             chat_id=group.chat_id,
-            status="failed",
+            status=SEND_STATUS_FAILED,
             started_at=started_at,
+            template_id=str(getattr(task, "template_id", "") or "").strip(),
+            template_ids=template_pool,
+            ad_probability=self._safe_probability(
+                getattr(settings, "ad_probability", 75),
+                75,
+            ),
+            noise_probability=self._safe_probability(
+                getattr(settings, "noise_probability", 22),
+                22,
+            ),
+            skip_probability=self._safe_probability(
+                getattr(settings, "skip_probability", 3),
+                3,
+            ),
             rotate_mode=self._task_account_rotate_mode(task),
             account_index=account_index,
             selected_account_name=account_name,
@@ -277,17 +405,61 @@ class GroupSendService:
             selected_group_name=str(group.group_name or ""),
             group_pool=group_pool,
             group_pool_size=len(group_pool),
-            account_delay_seconds=self._safe_non_negative_int(
-                getattr(task, "account_delay_seconds", 0),
-                0,
-            ),
-            group_delay_seconds=self._safe_non_negative_int(
-                getattr(task, "group_delay_seconds", 0),
-                0,
-            ),
-            message_mode=str(task.message_mode or MESSAGE_MODE_TEXT),
-            template_id=str(task.template_id or ""),
+            account_delay_min_ms=account_delay_min_ms,
+            account_delay_max_ms=account_delay_max_ms,
+            group_delay_min_ms=group_delay_min_ms,
+            group_delay_max_ms=group_delay_max_ms,
+            account_delay_seconds=int(account_delay_min_ms // 1000),
+            group_delay_seconds=int(group_delay_min_ms // 1000),
         )
+
+    def _choose_decision(
+        self,
+        settings: Settings,
+        rng: random.Random | None = None,
+    ) -> str:
+        random_source = rng if rng is not None else random
+
+        ad_probability = self._safe_probability(
+            getattr(settings, "ad_probability", 75),
+            75,
+        )
+        noise_probability = self._safe_probability(
+            getattr(settings, "noise_probability", 22),
+            22,
+        )
+        skip_probability = self._safe_probability(
+            getattr(settings, "skip_probability", 3),
+            3,
+        )
+
+        total = ad_probability + noise_probability + skip_probability
+
+        if total <= 0:
+            return SEND_DECISION_AD
+
+        hit = random_source.uniform(0, total)
+
+        if hit < ad_probability:
+            return SEND_DECISION_AD
+
+        if hit < ad_probability + noise_probability:
+            return SEND_DECISION_NOISE
+
+        return SEND_DECISION_SKIP
+
+    def _choose_template_id(
+        self,
+        task: SendTaskConfig,
+        rng: random.Random | None = None,
+    ) -> str:
+        random_source = rng if rng is not None else random
+        template_pool = self._task_template_pool(task)
+
+        if not template_pool:
+            return ""
+
+        return random_source.choice(template_pool)
 
     async def send_text_to_chat(
         self,
@@ -353,17 +525,21 @@ class GroupSendService:
         client,
         group: GroupConfig,
         task: SendTaskConfig,
+        settings: Settings,
+        rng: random.Random | None = None,
     ) -> SendResult:
         started_at = self._now_text()
         result = self._build_result(
             account_name=account_name,
             group=group,
             task=task,
+            settings=settings,
             started_at=started_at,
         )
 
         try:
             if not group.enabled:
+                result.status = SEND_STATUS_SKIPPED
                 result.error = "目标群组未启用"
                 self._log(
                     "warning",
@@ -373,6 +549,7 @@ class GroupSendService:
                 return result
 
             if not group.chat_id:
+                result.status = SEND_STATUS_SKIPPED
                 result.error = "目标 Chat ID 为空"
                 self._log(
                     "warning",
@@ -381,50 +558,110 @@ class GroupSendService:
                 )
                 return result
 
-            if task.message_mode == MESSAGE_MODE_TEXT:
+            decision = self._choose_decision(settings=settings, rng=rng)
+            result.decision = decision
+
+            if decision == SEND_DECISION_SKIP:
+                result.status = SEND_STATUS_SKIPPED
+                result.message_mode = LOG_MESSAGE_MODE_SKIP
+                result.error = "命中跳过概率，本轮不发送"
+                self._log(
+                    "info",
+                    f"[{account_name}] 命中跳过概率，本轮不发送 | "
+                    f"task={task.task_name} | group={group.group_name} | "
+                    f"chat_id={group.chat_id}",
+                )
+                return result
+
+            if decision == SEND_DECISION_NOISE:
+                noise_text = self.noise_pool_service.choose_random(rng=rng)
+
+                if not noise_text:
+                    result.status = SEND_STATUS_SKIPPED
+                    result.message_mode = LOG_MESSAGE_MODE_NOISE
+                    result.error = "命中噪音概率，但噪音池为空，本轮跳过"
+                    self._log(
+                        "warning",
+                        f"[{account_name}] 命中噪音概率，但噪音池为空，本轮跳过 | "
+                        f"task={task.task_name} | group={group.group_name} | "
+                        f"chat_id={group.chat_id}",
+                    )
+                    return result
+
+                result.message_mode = LOG_MESSAGE_MODE_NOISE
+                result.noise_text_preview = noise_text[:120]
                 ok = await self.send_text_to_chat(
                     account_name=account_name,
                     client=client,
                     chat_id=group.chat_id,
-                    text=task.text,
+                    text=noise_text,
                 )
-            elif task.message_mode == MESSAGE_MODE_TEMPLATE:
-                ok = await self.send_template_to_chat(
-                    account_name=account_name,
-                    client=client,
-                    chat_id=group.chat_id,
-                    template_id=task.template_id,
-                )
+
             else:
-                result.error = f"不支持的消息类型: {task.message_mode}"
-                self._log(
-                    "warning",
-                    f"[{account_name}] 不支持的消息类型 | "
-                    f"task={task.task_name} | message_mode={task.message_mode}",
-                )
-                return result
+                if task.message_mode == MESSAGE_MODE_TEXT:
+                    result.message_mode = LOG_MESSAGE_MODE_TEXT
+                    ok = await self.send_text_to_chat(
+                        account_name=account_name,
+                        client=client,
+                        chat_id=group.chat_id,
+                        text=task.text,
+                    )
+
+                elif task.message_mode == MESSAGE_MODE_TEMPLATE:
+                    selected_template_id = self._choose_template_id(
+                        task=task,
+                        rng=rng,
+                    )
+                    result.message_mode = LOG_MESSAGE_MODE_TEMPLATE
+                    result.selected_template_id = selected_template_id
+                    result.template_id = selected_template_id
+
+                    ok = await self.send_template_to_chat(
+                        account_name=account_name,
+                        client=client,
+                        chat_id=group.chat_id,
+                        template_id=selected_template_id,
+                    )
+
+                else:
+                    result.status = SEND_STATUS_SKIPPED
+                    result.error = f"不支持的消息类型: {task.message_mode}"
+                    self._log(
+                        "warning",
+                        f"[{account_name}] 不支持的消息类型 | "
+                        f"task={task.task_name} | message_mode={task.message_mode}",
+                    )
+                    return result
 
             if ok:
-                result.status = "success"
+                result.status = SEND_STATUS_SUCCESS
                 self._log(
                     "info",
                     f"[{account_name}] 群发任务执行成功 | "
                     f"task={task.task_name} | "
                     f"group={group.group_name} | "
                     f"chat_id={group.chat_id} | "
+                    f"decision={result.decision} | "
+                    f"message_mode={result.message_mode} | "
+                    f"template_id={result.selected_template_id} | "
                     f"account_rotate_mode={result.rotate_mode} | "
                     f"account_index={result.account_index} | "
                     f"group_rotate_mode={result.group_rotate_mode} | "
                     f"group_index={result.group_index}",
                 )
             else:
-                result.error = "发送服务返回失败"
+                result.status = SEND_STATUS_FAILED
+                if not result.error:
+                    result.error = "发送服务返回失败"
                 self._log(
                     "warning",
                     f"[{account_name}] 群发任务执行失败 | "
                     f"task={task.task_name} | "
                     f"group={group.group_name} | "
                     f"chat_id={group.chat_id} | "
+                    f"decision={result.decision} | "
+                    f"message_mode={result.message_mode} | "
+                    f"template_id={result.selected_template_id} | "
                     f"account_rotate_mode={result.rotate_mode} | "
                     f"account_index={result.account_index} | "
                     f"group_rotate_mode={result.group_rotate_mode} | "
@@ -434,6 +671,7 @@ class GroupSendService:
             return result
 
         except FloodWaitError as exc:
+            result.status = SEND_STATUS_FAILED
             result.flood_wait_seconds = self._safe_non_negative_int(
                 getattr(exc, "seconds", 0),
                 0,
@@ -451,6 +689,7 @@ class GroupSendService:
             return result
 
         except ChatWriteForbiddenError:
+            result.status = SEND_STATUS_FAILED
             result.error = "账号没有该群组发言权限"
             self._log(
                 "error",
@@ -461,6 +700,7 @@ class GroupSendService:
             return result
 
         except UserBannedInChannelError:
+            result.status = SEND_STATUS_FAILED
             result.error = "账号在该群组/频道中被限制或封禁"
             self._log(
                 "error",
@@ -471,6 +711,7 @@ class GroupSendService:
             return result
 
         except ChannelPrivateError:
+            result.status = SEND_STATUS_FAILED
             result.error = "目标群组/频道不可访问，可能是私有群或账号未加入"
             self._log(
                 "error",
@@ -481,6 +722,7 @@ class GroupSendService:
             return result
 
         except UserNotParticipantError:
+            result.status = SEND_STATUS_FAILED
             result.error = "账号不是目标群组成员"
             self._log(
                 "error",
@@ -491,6 +733,7 @@ class GroupSendService:
             return result
 
         except PeerIdInvalidError:
+            result.status = SEND_STATUS_FAILED
             result.error = "目标 Chat ID 无效或账号无法解析该会话"
             self._log(
                 "error",
@@ -501,6 +744,7 @@ class GroupSendService:
             return result
 
         except Exception as exc:
+            result.status = SEND_STATUS_FAILED
             result.error = str(exc)
             self._log(
                 "error",
@@ -508,6 +752,9 @@ class GroupSendService:
                 f"task={task.task_name} | "
                 f"group={group.group_name} | "
                 f"chat_id={group.chat_id} | "
+                f"decision={result.decision} | "
+                f"message_mode={result.message_mode} | "
+                f"template_id={result.selected_template_id} | "
                 f"account_rotate_mode={result.rotate_mode} | "
                 f"account_index={result.account_index} | "
                 f"group_rotate_mode={result.group_rotate_mode} | "

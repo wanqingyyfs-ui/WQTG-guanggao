@@ -37,6 +37,8 @@ class GroupPage(QWidget):
         super().__init__()
 
         self.groups: list[GroupConfig] = []
+        self.default_group_enabled = True
+        self.default_group_username_normalize = True
 
         self.table = QTableWidget(0, 6)
         self.table.setHorizontalHeaderLabels(
@@ -103,7 +105,10 @@ class GroupPage(QWidget):
         top_layout = QVBoxLayout(top_widget)
         top_layout.setContentsMargins(0, 0, 0, 0)
         top_layout.setSpacing(10)
-        top_layout.addWidget(QLabel("目标群管理"))
+
+        title_label = QLabel("群组管理")
+        title_label.setObjectName("PageTitleLabel")
+        top_layout.addWidget(title_label)
         top_layout.addWidget(make_scroll_area(table_group, minimum_height=240), 1)
 
         bottom_content = QWidget()
@@ -127,10 +132,22 @@ class GroupPage(QWidget):
         layout.addWidget(splitter)
 
         self.table.itemSelectionChanged.connect(self.on_selection_changed)
+        self._update_action_buttons()
+
+    def set_defaults(
+        self,
+        default_group_enabled: bool = True,
+        default_group_username_normalize: bool = True,
+    ) -> None:
+        self.default_group_enabled = bool(default_group_enabled)
+        self.default_group_username_normalize = bool(
+            default_group_username_normalize
+        )
 
     def set_groups(self, groups: list[GroupConfig]) -> None:
         self.groups = list(groups or [])
         self.refresh_table()
+        self._update_action_buttons()
 
     def refresh_table(self) -> None:
         self.table.setRowCount(0)
@@ -170,7 +187,12 @@ class GroupPage(QWidget):
 
         group_name = self.name_edit.text().strip()
         chat_id = self._parse_chat_id(self.chat_id_edit.text())
-        username = self._normalize_username(self.username_edit.text())
+
+        if self.default_group_username_normalize:
+            username = self._normalize_username(self.username_edit.text())
+        else:
+            username = self.username_edit.text().strip()
+
         remark = self.remark_edit.toPlainText().strip()
 
         return GroupConfig(
@@ -188,12 +210,14 @@ class GroupPage(QWidget):
         self.chat_id_edit.clear()
         self.username_edit.clear()
         self.remark_edit.clear()
-        self.enabled_check.setChecked(True)
+        self.enabled_check.setChecked(bool(self.default_group_enabled))
+        self._update_action_buttons()
 
     def on_selection_changed(self) -> None:
         row = self.get_selected_row()
 
         if row < 0 or row >= len(self.groups):
+            self._update_action_buttons()
             return
 
         group = self.groups[row]
@@ -203,6 +227,11 @@ class GroupPage(QWidget):
         self.username_edit.setText(str(group.username or ""))
         self.remark_edit.setPlainText(str(group.remark or ""))
         self.enabled_check.setChecked(bool(group.enabled))
+        self._update_action_buttons()
+
+    def _update_action_buttons(self) -> None:
+        has_selection = 0 <= self.get_selected_row() < len(self.groups)
+        self.delete_button.setEnabled(has_selection)
 
     @staticmethod
     def _parse_chat_id(value: Any) -> int:

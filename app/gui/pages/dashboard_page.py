@@ -5,7 +5,6 @@ from typing import Any
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
-    QDoubleSpinBox,
     QFormLayout,
     QGridLayout,
     QGroupBox,
@@ -14,7 +13,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
-    QSpinBox,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -24,7 +22,6 @@ from PySide6.QtWidgets import (
 from app.core.models import (
     SCHEDULE_MODE_DAILY,
     SCHEDULE_MODE_INTERVAL,
-    SCHEDULE_MODE_MANUAL,
 )
 from app.gui.pages.layout_utils import (
     apply_large_inputs,
@@ -47,50 +44,16 @@ class DashboardPage(QWidget):
         self.enabled_groups_count_value = QLabel("0")
         self.tasks_count_value = QLabel("0")
         self.enabled_tasks_count_value = QLabel("0")
-        self.manual_tasks_count_value = QLabel("0")
         self.interval_tasks_count_value = QLabel("0")
         self.daily_tasks_count_value = QLabel("0")
         self.scheduler_status_value = QLabel("stopped")
 
-        self.summary_value_labels = [
-            self.accounts_count_value,
-            self.enabled_accounts_count_value,
-            self.online_accounts_count_value,
-            self.groups_count_value,
-            self.enabled_groups_count_value,
-            self.tasks_count_value,
-            self.enabled_tasks_count_value,
-            self.manual_tasks_count_value,
-            self.interval_tasks_count_value,
-            self.daily_tasks_count_value,
-            self.scheduler_status_value,
-        ]
-
-        for label in self.summary_value_labels:
-            label.setMinimumHeight(42)
-            label.setAlignment(Qt.AlignmentFlag.AlignVCenter)
-
-        self.scheduler_tick_spin = QDoubleSpinBox()
-        self.scheduler_tick_spin.setRange(0.2, 60.0)
-        self.scheduler_tick_spin.setDecimals(1)
-        self.scheduler_tick_spin.setSingleStep(0.5)
-        self.scheduler_tick_spin.setSuffix(" 秒")
-
-        self.max_concurrent_tasks_spin = QSpinBox()
-        self.max_concurrent_tasks_spin.setRange(1, 20)
-        self.max_concurrent_tasks_spin.setSuffix(" 个")
-
-        self.default_send_interval_spin = QDoubleSpinBox()
-        self.default_send_interval_spin.setRange(0.0, 86400.0)
-        self.default_send_interval_spin.setDecimals(1)
-        self.default_send_interval_spin.setSingleStep(1.0)
-        self.default_send_interval_spin.setSuffix(" 秒")
-
-        self.template_account_edit = QLineEdit()
-        self.template_account_edit.setPlaceholderText("填写用于监听素材群的账号名称")
-
-        self.template_chat_id_edit = QLineEdit()
-        self.template_chat_id_edit.setPlaceholderText("例如：-1001234567890")
+        self.ad_probability_value = QLabel("75%")
+        self.noise_probability_value = QLabel("22%")
+        self.skip_probability_value = QLabel("3%")
+        self.max_concurrent_tasks_value = QLabel("不限制")
+        self.scheduler_tick_value = QLabel("1.0 秒")
+        self.default_task_interval_value = QLabel("3600000 毫秒")
 
         self.log_file_edit = QLineEdit()
         self.log_file_edit.setReadOnly(True)
@@ -98,7 +61,6 @@ class DashboardPage(QWidget):
         self.sessions_dir_edit = QLineEdit()
         self.sessions_dir_edit.setReadOnly(True)
 
-        self.save_button = QPushButton("保存配置")
         self.reload_button = QPushButton("重新加载配置")
         self.start_all_button = QPushButton("启动全部账号")
         self.stop_all_button = QPushButton("停止全部账号")
@@ -119,6 +81,9 @@ class DashboardPage(QWidget):
         self.status_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         style_table(self.status_table)
 
+        self._build_ui()
+
+    def _build_ui(self) -> None:
         summary_group = QGroupBox("运行概览")
         style_group_box(summary_group)
 
@@ -143,32 +108,35 @@ class DashboardPage(QWidget):
 
         summary_layout.addWidget(QLabel("启用任务"), 2, 0)
         summary_layout.addWidget(self.enabled_tasks_count_value, 2, 1)
-        summary_layout.addWidget(QLabel("手动任务"), 2, 2)
-        summary_layout.addWidget(self.manual_tasks_count_value, 2, 3)
-        summary_layout.addWidget(QLabel("间隔任务"), 2, 4)
-        summary_layout.addWidget(self.interval_tasks_count_value, 2, 5)
+        summary_layout.addWidget(QLabel("间隔任务"), 2, 2)
+        summary_layout.addWidget(self.interval_tasks_count_value, 2, 3)
+        summary_layout.addWidget(QLabel("每日任务"), 2, 4)
+        summary_layout.addWidget(self.daily_tasks_count_value, 2, 5)
 
-        summary_layout.addWidget(QLabel("每日任务"), 3, 0)
-        summary_layout.addWidget(self.daily_tasks_count_value, 3, 1)
-        summary_layout.addWidget(QLabel("调度器状态"), 3, 2)
-        summary_layout.addWidget(self.scheduler_status_value, 3, 3)
+        summary_layout.addWidget(QLabel("调度器状态"), 3, 0)
+        summary_layout.addWidget(self.scheduler_status_value, 3, 1)
 
-        runtime_group = QGroupBox("群发调度配置")
-        style_group_box(runtime_group)
+        strategy_group = QGroupBox("当前发送策略摘要")
+        style_group_box(strategy_group)
 
-        runtime_form = QFormLayout(runtime_group)
-        style_form_layout(runtime_form)
-        runtime_form.addRow("任务扫描间隔", self.scheduler_tick_spin)
-        runtime_form.addRow("最大并发任务数", self.max_concurrent_tasks_spin)
-        runtime_form.addRow("默认发送间隔", self.default_send_interval_spin)
+        strategy_layout = QGridLayout(strategy_group)
+        strategy_layout.setContentsMargins(28, 28, 28, 26)
+        strategy_layout.setHorizontalSpacing(36)
+        strategy_layout.setVerticalSpacing(18)
 
-        template_group = QGroupBox("素材群监听配置")
-        style_group_box(template_group)
+        strategy_layout.addWidget(QLabel("广告概率"), 0, 0)
+        strategy_layout.addWidget(self.ad_probability_value, 0, 1)
+        strategy_layout.addWidget(QLabel("噪音概率"), 0, 2)
+        strategy_layout.addWidget(self.noise_probability_value, 0, 3)
+        strategy_layout.addWidget(QLabel("跳过概率"), 0, 4)
+        strategy_layout.addWidget(self.skip_probability_value, 0, 5)
 
-        template_form = QFormLayout(template_group)
-        style_form_layout(template_form)
-        template_form.addRow("素材账号名", self.template_account_edit)
-        template_form.addRow("素材群 Chat ID", self.template_chat_id_edit)
+        strategy_layout.addWidget(QLabel("最大并发任务"), 1, 0)
+        strategy_layout.addWidget(self.max_concurrent_tasks_value, 1, 1)
+        strategy_layout.addWidget(QLabel("调度扫描间隔"), 1, 2)
+        strategy_layout.addWidget(self.scheduler_tick_value, 1, 3)
+        strategy_layout.addWidget(QLabel("默认任务间隔"), 1, 4)
+        strategy_layout.addWidget(self.default_task_interval_value, 1, 5)
 
         path_group = QGroupBox("运行路径")
         style_group_box(path_group)
@@ -178,39 +146,29 @@ class DashboardPage(QWidget):
         path_form.addRow("日志文件", self.log_file_edit)
         path_form.addRow("Session 目录", self.sessions_dir_edit)
 
-        apply_large_inputs(runtime_group)
-        apply_large_inputs(template_group)
         apply_large_inputs(path_group)
-
-        config_button_bar = QWidget()
-        config_button_layout = QHBoxLayout(config_button_bar)
-        config_button_layout.setContentsMargins(12, 12, 12, 12)
-        config_button_layout.setSpacing(14)
-        config_button_layout.addWidget(self.save_button)
-        config_button_layout.addWidget(self.reload_button)
-        config_button_layout.addStretch(1)
 
         runtime_button_bar = QWidget()
         runtime_button_layout = QHBoxLayout(runtime_button_bar)
         runtime_button_layout.setContentsMargins(12, 12, 12, 12)
         runtime_button_layout.setSpacing(14)
+        runtime_button_layout.addWidget(self.reload_button)
+        runtime_button_layout.addStretch(1)
         runtime_button_layout.addWidget(self.start_all_button)
         runtime_button_layout.addWidget(self.stop_all_button)
         runtime_button_layout.addStretch(1)
         runtime_button_layout.addWidget(self.start_scheduler_button)
         runtime_button_layout.addWidget(self.stop_scheduler_button)
 
-        config_content = QWidget()
-        config_layout = QVBoxLayout(config_content)
-        config_layout.setContentsMargins(0, 0, 0, 0)
-        config_layout.setSpacing(12)
-        config_layout.addWidget(summary_group)
-        config_layout.addWidget(runtime_group)
-        config_layout.addWidget(template_group)
-        config_layout.addWidget(path_group)
-        config_layout.addWidget(config_button_bar)
-        config_layout.addWidget(runtime_button_bar)
-        config_layout.addStretch(1)
+        dashboard_content = QWidget()
+        dashboard_layout = QVBoxLayout(dashboard_content)
+        dashboard_layout.setContentsMargins(0, 0, 0, 0)
+        dashboard_layout.setSpacing(12)
+        dashboard_layout.addWidget(summary_group)
+        dashboard_layout.addWidget(strategy_group)
+        dashboard_layout.addWidget(path_group)
+        dashboard_layout.addWidget(runtime_button_bar)
+        dashboard_layout.addStretch(1)
 
         status_group = QGroupBox("账号运行状态")
         style_group_box(status_group)
@@ -223,15 +181,18 @@ class DashboardPage(QWidget):
         top_layout = QVBoxLayout(top_widget)
         top_layout.setContentsMargins(0, 0, 0, 0)
         top_layout.setSpacing(10)
-        top_layout.addWidget(QLabel("运行总控"))
-        top_layout.addWidget(make_scroll_area(config_content, minimum_height=360), 1)
+
+        title_label = QLabel("运行总控")
+        title_label.setObjectName("PageTitleLabel")
+        top_layout.addWidget(title_label)
+        top_layout.addWidget(make_scroll_area(dashboard_content, minimum_height=360), 1)
 
         bottom_widget = make_scroll_area(status_group, minimum_height=260)
 
         splitter = make_vertical_splitter(
             top_widget=top_widget,
             bottom_widget=bottom_widget,
-            sizes=[560, 330],
+            sizes=[520, 360],
         )
 
         layout = QVBoxLayout(self)
@@ -264,16 +225,6 @@ class DashboardPage(QWidget):
             str(sum(1 for item in tasks_list if bool(getattr(item, "enabled", True))))
         )
 
-        self.manual_tasks_count_value.setText(
-            str(
-                sum(
-                    1
-                    for item in tasks_list
-                    if getattr(item, "schedule_mode", SCHEDULE_MODE_MANUAL)
-                    == SCHEDULE_MODE_MANUAL
-                )
-            )
-        )
         self.interval_tasks_count_value.setText(
             str(
                 sum(
@@ -298,29 +249,30 @@ class DashboardPage(QWidget):
         )
         self._update_scheduler_buttons(scheduler_status)
 
-        self.scheduler_tick_spin.setValue(
-            self._safe_float(getattr(settings, "scheduler_tick_seconds", 1.0), 1.0)
+        self.ad_probability_value.setText(
+            f"{self._safe_int(getattr(settings, 'ad_probability', 75), 75)}%"
         )
-        self.max_concurrent_tasks_spin.setValue(
-            self._safe_int(getattr(settings, "max_concurrent_tasks", 1), 1)
+        self.noise_probability_value.setText(
+            f"{self._safe_int(getattr(settings, 'noise_probability', 22), 22)}%"
         )
-        self.default_send_interval_spin.setValue(
-            self._safe_float(
-                getattr(settings, "default_send_interval_seconds", 1.0),
-                1.0,
-            )
+        self.skip_probability_value.setText(
+            f"{self._safe_int(getattr(settings, 'skip_probability', 3), 3)}%"
         )
 
-        self.template_account_edit.setText(
-            str(getattr(settings, "template_source_account_name", "") or "")
-        )
-
-        template_source_chat_id = self._safe_int(
-            getattr(settings, "template_source_chat_id", 0),
+        max_concurrent_tasks = self._safe_int(
+            getattr(settings, "max_concurrent_tasks", 0),
             0,
         )
-        self.template_chat_id_edit.setText(
-            str(template_source_chat_id) if template_source_chat_id else ""
+        if max_concurrent_tasks <= 0:
+            self.max_concurrent_tasks_value.setText("不限制")
+        else:
+            self.max_concurrent_tasks_value.setText(f"{max_concurrent_tasks} 个")
+
+        self.scheduler_tick_value.setText(
+            f"{self._safe_float(getattr(settings, 'scheduler_tick_seconds', 1.0), 1.0):.2f} 秒"
+        )
+        self.default_task_interval_value.setText(
+            f"{self._safe_int(getattr(settings, 'default_task_interval_ms', 3600000), 3600000)} 毫秒"
         )
 
         self.log_file_edit.setText(str(getattr(settings, "log_file", "") or ""))

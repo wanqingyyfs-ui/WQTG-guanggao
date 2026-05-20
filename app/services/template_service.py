@@ -76,7 +76,17 @@ class TemplateSender:
 
         return self.templates.get(safe_template_id)
 
-    def _validate_template_for_forward(
+    def has_template(self, template_id: str) -> bool:
+        return self.get_template(template_id) is not None
+
+    def get_enabled_template_ids(self) -> list[str]:
+        return [
+            template_id
+            for template_id, template in self.templates.items()
+            if bool(getattr(template, "enabled", True))
+        ]
+
+    def _validate_template(
         self,
         account_name: str,
         template: TemplateConfig,
@@ -121,19 +131,8 @@ class TemplateSender:
             )
             return None
 
-        send_mode = str(
-            getattr(template, "send_mode", TEMPLATE_SEND_MODE_FORWARD) or ""
-        ).strip()
-
-        if send_mode == TEMPLATE_SEND_MODE_CLONE:
-            self._log(
-                "warning",
-                f"[{account_name}] clone 模式暂未启用，已跳过模板发送 | "
-                f"template_id={template.template_id}",
-            )
-            return None
-
-        if send_mode != TEMPLATE_SEND_MODE_FORWARD:
+        send_mode = self._get_template_send_mode(template)
+        if send_mode not in {TEMPLATE_SEND_MODE_FORWARD, TEMPLATE_SEND_MODE_CLONE}:
             self._log(
                 "warning",
                 f"[{account_name}] 不支持的模板发送模式 | "
@@ -142,6 +141,17 @@ class TemplateSender:
             return None
 
         return source_message_ids
+
+    @staticmethod
+    def _get_template_send_mode(template: TemplateConfig) -> str:
+        send_mode = str(
+            getattr(template, "send_mode", TEMPLATE_SEND_MODE_FORWARD) or ""
+        ).strip()
+
+        if send_mode in {TEMPLATE_SEND_MODE_FORWARD, TEMPLATE_SEND_MODE_CLONE}:
+            return send_mode
+
+        return TEMPLATE_SEND_MODE_FORWARD
 
     async def _resolve_target_peer(
         self,
@@ -211,7 +221,7 @@ class TemplateSender:
             )
             return False
 
-        source_message_ids = self._validate_template_for_forward(
+        source_message_ids = self._validate_template(
             account_name=account_name,
             template=template,
             target_chat_id=target_chat_id,
@@ -236,6 +246,39 @@ class TemplateSender:
         if source_peer is None:
             return False
 
+        send_mode = self._get_template_send_mode(template)
+
+        if send_mode == TEMPLATE_SEND_MODE_CLONE:
+            return await self._send_template_by_clone(
+                account_name=account_name,
+                client=client,
+                template=template,
+                source_peer=source_peer,
+                target_peer=target_peer,
+                target_chat_id=target_chat_id,
+                source_message_ids=source_message_ids,
+            )
+
+        return await self._send_template_by_forward(
+            account_name=account_name,
+            client=client,
+            template=template,
+            source_peer=source_peer,
+            target_peer=target_peer,
+            target_chat_id=target_chat_id,
+            source_message_ids=source_message_ids,
+        )
+
+    async def _send_template_by_forward(
+        self,
+        account_name: str,
+        client,
+        template: TemplateConfig,
+        source_peer,
+        target_peer,
+        target_chat_id: int,
+        source_message_ids: list[int],
+    ) -> bool:
         try:
             await client.forward_messages(
                 entity=target_peer,
@@ -334,3 +377,195 @@ class TemplateSender:
                 f"error={exc}",
             )
             return False
+
+    async def _send_template_by_clone(
+        self,
+        account_name: str,
+        client,
+        template: TemplateConfig,
+        source_peer,
+        target_peer,
+        target_chat_id: int,
+        source_message_ids: list[int],
+    ) -> bool:
+        try:
+            messages = await client.get_messages(
+                source_peer,
+                ids=source_message_ids,
+            )
+            message_list = self._normalize_loaded_messages(messages)
+
+            if not message_list:
+                self._log(
+                    "warning",
+                    f"[{account_name}] clone 模式未读取到来源消息 | "
+                    f"template={template.template_name} | "
+                    f"source_message_ids={source_message_ids}",
+                )
+                return False
+
+            for message in message_list:
+                await self._clone_one_message(
+                    client=client,
+                    target_peer=target_peer,
+                    message=message,
+                )
+
+            self._log(
+                "info",
+                f"[{account_name}] 模板克隆发送成功 | "
+                f"template={template.template_name} | "
+                f"target_chat_id={target_chat_id} | "
+                f"source_chat_id={template.source_chat_id} | "
+                f"source_message_ids={source_message_ids}",
+            )
+            return True
+
+        except FloodWaitError as exc:
+            self._log(
+                "warning",
+                f"[{account_name}] 模板克隆触发 FloodWait | "
+                f"seconds={getattr(exc, 'seconds', 0)} | "
+                f"template={template.template_name} | "
+                f"target_chat_id={target_chat_id} | "
+                f"source_chat_id={template.source_chat_id}",
+            )
+            raise
+
+        except ChatWriteForbiddenError:
+            self._log(
+                "error",
+                f"[{account_name}] 模板克隆失败，账号没有目标群发言权限 | "
+                f"template={template.template_name} | "
+                f"target_chat_id={target_chat_id}",
+            )
+            return False
+
+        except UserBannedInChannelError:
+            self._log(
+                "error",
+                f"[{account_name}] 模板克隆失败，账号在目标群/频道中被限制或封禁 | "
+                f"template={template.template_name} | "
+                f"target_chat_id={target_chat_id}",
+            )
+            return False
+
+        except UserNotParticipantError:
+            self._log(
+                "error",
+                f"[{account_name}] 模板克隆失败，账号不是来源群或目标群成员 | "
+                f"template={template.template_name} | "
+                f"source_chat_id={template.source_chat_id} | "
+                f"target_chat_id={target_chat_id}",
+            )
+            return False
+
+        except ChannelPrivateError:
+            self._log(
+                "error",
+                f"[{account_name}] 模板克隆失败，来源群或目标群不可访问 | "
+                f"template={template.template_name} | "
+                f"source_chat_id={template.source_chat_id} | "
+                f"target_chat_id={target_chat_id}",
+            )
+            return False
+
+        except PeerIdInvalidError:
+            self._log(
+                "error",
+                f"[{account_name}] 模板克隆失败，来源或目标 Peer 无效 | "
+                f"template={template.template_name} | "
+                f"source_chat_id={template.source_chat_id} | "
+                f"target_chat_id={target_chat_id}",
+            )
+            return False
+
+        except ValueError as exc:
+            self._log(
+                "error",
+                f"[{account_name}] 模板克隆参数无效 | "
+                f"template={template.template_name} | "
+                f"target_chat_id={target_chat_id} | "
+                f"source_chat_id={template.source_chat_id} | "
+                f"source_message_ids={source_message_ids} | error={exc}",
+            )
+            return False
+
+        except Exception as exc:
+            self._log(
+                "error",
+                f"[{account_name}] 模板克隆未知异常 | "
+                f"template={template.template_name} | "
+                f"target_chat_id={target_chat_id} | "
+                f"source_chat_id={template.source_chat_id} | "
+                f"source_message_ids={source_message_ids} | "
+                f"error={exc}",
+            )
+            return False
+
+    @staticmethod
+    def _normalize_loaded_messages(messages: Any) -> list[Any]:
+        if messages is None:
+            return []
+
+        if isinstance(messages, list):
+            raw_items = messages
+        elif isinstance(messages, tuple):
+            raw_items = list(messages)
+        else:
+            raw_items = [messages]
+
+        return [message for message in raw_items if message is not None]
+
+    @staticmethod
+    def _message_text(message: Any) -> str:
+        raw_text = getattr(message, "raw_text", None)
+
+        if raw_text:
+            return str(raw_text)
+
+        text = getattr(message, "message", None)
+
+        if text:
+            return str(text)
+
+        return ""
+
+    @staticmethod
+    def _message_entities(message: Any):
+        entities = getattr(message, "entities", None)
+
+        if entities:
+            return entities
+
+        return None
+
+    async def _clone_one_message(self, client, target_peer, message: Any) -> None:
+        text = self._message_text(message)
+        entities = self._message_entities(message)
+        media = getattr(message, "media", None)
+
+        if media is not None:
+            kwargs: dict[str, Any] = {
+                "entity": target_peer,
+                "file": media,
+            }
+
+            if text:
+                kwargs["caption"] = text
+
+            if entities is not None:
+                kwargs["formatting_entities"] = entities
+
+            await client.send_file(**kwargs)
+            return
+
+        kwargs = {
+            "entity": target_peer,
+            "message": text,
+        }
+
+        if entities is not None:
+            kwargs["formatting_entities"] = entities
+
+        await client.send_message(**kwargs)

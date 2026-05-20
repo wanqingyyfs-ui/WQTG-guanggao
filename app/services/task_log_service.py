@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from dataclasses import asdict, is_dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +19,10 @@ class TaskLogService:
     def _log(self, level: str, message: str) -> None:
         if callable(self.log_func):
             self.log_func(level, message)
+
+    @staticmethod
+    def _now_text() -> str:
+        return datetime.now().isoformat(timespec="seconds")
 
     def append_result(self, result: SendResult | None) -> None:
         if result is None:
@@ -44,6 +49,10 @@ class TaskLogService:
     def append_record(self, record: Mapping[str, Any] | dict[str, Any]) -> None:
         try:
             safe_record = self._sanitize_record(record)
+
+            if "logged_at" not in safe_record:
+                safe_record["logged_at"] = self._now_text()
+
             line = json.dumps(
                 safe_record,
                 ensure_ascii=False,
@@ -59,6 +68,92 @@ class TaskLogService:
 
         except Exception as exc:
             self._log("error", f"追加任务日志失败: {exc}")
+
+    def read_recent_records(self, limit: int = 300) -> list[dict[str, Any]]:
+        safe_limit = self._normalize_limit(limit)
+
+        if not self.log_file.exists():
+            return []
+
+        try:
+            records: list[dict[str, Any]] = []
+            lines = self._read_tail_lines(safe_limit)
+
+            for line in lines:
+                text = line.strip()
+
+                if not text:
+                    continue
+
+                try:
+                    record = json.loads(text)
+                except json.JSONDecodeError:
+                    records.append(
+                        {
+                            "status": "invalid",
+                            "error": "日志行不是有效 JSON",
+                            "raw_line": text[:500],
+                        }
+                    )
+                    continue
+
+                if isinstance(record, dict):
+                    records.append(self._sanitize_record(record))
+                else:
+                    records.append(
+                        {
+                            "status": "invalid",
+                            "error": f"日志记录不是对象: {type(record).__name__}",
+                            "raw_record": str(record)[:500],
+                        }
+                    )
+
+            return records
+
+        except Exception as exc:
+            self._log("error", f"读取任务日志失败: {exc}")
+            return []
+
+    def clear(self) -> None:
+        try:
+            self.log_file.parent.mkdir(parents=True, exist_ok=True)
+            self.log_file.write_text("", encoding="utf-8")
+        except Exception as exc:
+            self._log("error", f"清空任务日志失败: {exc}")
+
+    def get_log_file(self) -> Path:
+        return self.log_file
+
+    def _read_tail_lines(self, limit: int) -> list[str]:
+        if limit <= 0:
+            return []
+
+        try:
+            with self.log_file.open("r", encoding="utf-8") as f:
+                lines = f.readlines()
+        except UnicodeDecodeError:
+            with self.log_file.open("r", encoding="utf-8", errors="replace") as f:
+                lines = f.readlines()
+
+        if not lines:
+            return []
+
+        return lines[-limit:]
+
+    @staticmethod
+    def _normalize_limit(limit: int) -> int:
+        try:
+            safe_limit = int(limit)
+        except (TypeError, ValueError):
+            safe_limit = 300
+
+        if safe_limit <= 0:
+            return 300
+
+        if safe_limit > 5000:
+            return 5000
+
+        return safe_limit
 
     def _sanitize_record(self, record: Mapping[str, Any] | dict[str, Any]) -> dict[str, Any]:
         if not isinstance(record, Mapping):

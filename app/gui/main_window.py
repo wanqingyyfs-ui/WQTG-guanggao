@@ -22,12 +22,14 @@ from app.core.models import (
 from app.gui.dialogs.login_dialog import LoginConfirmDialog
 from app.gui.dialogs.verify_dialog import VerifyInputDialog
 from app.gui.pages.account_page import AccountPage
+from app.gui.pages.config_page import ConfigPage
 from app.gui.pages.dashboard_page import DashboardPage
 from app.gui.pages.group_page import GroupPage
 from app.gui.pages.log_page import LogPage
+from app.gui.pages.noise_page import NoisePage
 from app.gui.pages.task_page import TaskPage
 from app.gui.pages.template_page import TemplatePage
-from app.gui.style import APP_QSS
+from app.gui.style import build_app_qss
 from app.services.runtime_service import RuntimeService
 
 
@@ -47,8 +49,8 @@ class MainWindow(QMainWindow):
         if icon_path.exists():
             self.setWindowIcon(QIcon(str(icon_path)))
 
-        self.setFixedSize(1280, 860)
-        self.setStyleSheet(APP_QSS)
+        self.resize(1280, 860)
+        self.setMinimumSize(980, 680)
 
         self.runtime_service = RuntimeService()
         self.accounts = list(self.runtime_service.accounts)
@@ -58,23 +60,32 @@ class MainWindow(QMainWindow):
         self.settings = self.runtime_service.settings
         self.status_map = self.runtime_service.get_status_map()
         self.scheduler_status = self.runtime_service.get_scheduler_status()
+        self._style_signature = self._build_style_signature()
+
+        self._apply_app_style()
 
         self.dashboard_page = DashboardPage()
+        self.config_page = ConfigPage(self.runtime_service)
         self.account_page = AccountPage()
         self.group_page = GroupPage()
         self.task_page = TaskPage()
         self.template_page = TemplatePage()
+        self.noise_page = NoisePage(self.runtime_service)
         self.log_page = LogPage(str(self.runtime_service.get_logs_dir()))
+
+        self._hide_legacy_send_once_button()
 
         self.tabs = QTabWidget()
         self.tabs.setDocumentMode(False)
         self.tabs.setUsesScrollButtons(False)
         self.tabs.setElideMode(Qt.TextElideMode.ElideNone)
         self.tabs.addTab(self.dashboard_page, "运行总控")
+        self.tabs.addTab(self.config_page, "配置管理")
         self.tabs.addTab(self.account_page, "账号管理")
         self.tabs.addTab(self.group_page, "群组管理")
         self.tabs.addTab(self.task_page, "任务管理")
         self.tabs.addTab(self.template_page, "模板管理")
+        self.tabs.addTab(self.noise_page, "噪音配置")
         self.tabs.addTab(self.log_page, "日志查看")
 
         container = QWidget()
@@ -96,10 +107,21 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("准备就绪", 3000)
 
     def _connect_signals(self) -> None:
-        self.dashboard_page.save_button.clicked.connect(self.on_save_all_clicked)
-        self.dashboard_page.reload_button.clicked.connect(self.on_reload_clicked)
-        self.dashboard_page.start_all_button.clicked.connect(self.on_start_all_clicked)
-        self.dashboard_page.stop_all_button.clicked.connect(self.on_stop_all_clicked)
+        if hasattr(self.dashboard_page, "save_button"):
+            self.dashboard_page.save_button.clicked.connect(self.on_save_all_clicked)
+
+        if hasattr(self.dashboard_page, "reload_button"):
+            self.dashboard_page.reload_button.clicked.connect(self.on_reload_clicked)
+
+        if hasattr(self.dashboard_page, "start_all_button"):
+            self.dashboard_page.start_all_button.clicked.connect(
+                self.on_start_all_clicked
+            )
+
+        if hasattr(self.dashboard_page, "stop_all_button"):
+            self.dashboard_page.stop_all_button.clicked.connect(
+                self.on_stop_all_clicked
+            )
 
         if hasattr(self.dashboard_page, "start_scheduler_button"):
             self.dashboard_page.start_scheduler_button.clicked.connect(
@@ -127,16 +149,15 @@ class MainWindow(QMainWindow):
         self.task_page.delete_button.clicked.connect(self.on_delete_task_clicked)
         self.task_page.up_button.clicked.connect(self.on_task_up_clicked)
         self.task_page.down_button.clicked.connect(self.on_task_down_clicked)
-        self.task_page.send_once_button.clicked.connect(
-            self.on_send_task_once_clicked
-        )
 
         self.template_page.add_button.clicked.connect(self.template_page.clear_form)
         self.template_page.save_button.clicked.connect(self.on_save_template_clicked)
         self.template_page.delete_button.clicked.connect(
             self.on_delete_template_clicked
         )
-        self.template_page.refresh_button.clicked.connect(self.on_reload_clicked)
+
+        if hasattr(self.template_page, "refresh_button"):
+            self.template_page.refresh_button.clicked.connect(self.on_reload_clicked)
 
         self.runtime_service.log_received.connect(self.on_runtime_log_received)
         self.runtime_service.account_status_changed.connect(
@@ -144,6 +165,10 @@ class MainWindow(QMainWindow):
         )
         self.runtime_service.runtime_hint.connect(self.on_runtime_hint)
         self.runtime_service.templates_changed.connect(self.on_templates_changed)
+
+        if hasattr(self.runtime_service, "noise_pool_changed"):
+            self.runtime_service.noise_pool_changed.connect(self.on_noise_pool_changed)
+
         self.runtime_service.scheduler_status_changed.connect(
             self.on_scheduler_status_changed
         )
@@ -155,6 +180,36 @@ class MainWindow(QMainWindow):
             self.on_password_input_required
         )
 
+    def _hide_legacy_send_once_button(self) -> None:
+        if not hasattr(self.task_page, "send_once_button"):
+            return
+
+        self.task_page.send_once_button.setVisible(False)
+        self.task_page.send_once_button.setEnabled(False)
+        self.task_page.send_once_button.setToolTip(
+            "最终版已移除立即发送一次功能"
+        )
+
+    def _build_style_signature(self) -> tuple[int, int, int, int]:
+        return (
+            int(getattr(self.settings, "global_font_size", 13) or 13),
+            int(getattr(self.settings, "table_font_size", 13) or 13),
+            int(getattr(self.settings, "button_font_size", 13) or 13),
+            int(getattr(self.settings, "input_font_size", 13) or 13),
+        )
+
+    def _apply_app_style(self) -> None:
+        self.setStyleSheet(build_app_qss(self.settings))
+
+    def _refresh_style_if_needed(self) -> None:
+        current_signature = self._build_style_signature()
+
+        if current_signature == self._style_signature:
+            return
+
+        self._style_signature = current_signature
+        self._apply_app_style()
+
     def _sync_state_from_runtime(self) -> None:
         self.accounts = list(self.runtime_service.accounts)
         self.groups = list(self.runtime_service.groups)
@@ -163,6 +218,7 @@ class MainWindow(QMainWindow):
         self.settings = self.runtime_service.settings
         self.status_map = self.runtime_service.get_status_map()
         self.scheduler_status = self.runtime_service.get_scheduler_status()
+        self._refresh_style_if_needed()
 
         if hasattr(self, "log_page"):
             if hasattr(self.log_page, "set_logs_dir"):
@@ -192,28 +248,44 @@ class MainWindow(QMainWindow):
     def _show_info(self, text: str) -> None:
         QMessageBox.information(self, "提示", text)
 
-    def _sync_settings_from_dashboard(self) -> None:
-        self.settings.scheduler_tick_seconds = float(
-            self.dashboard_page.scheduler_tick_spin.value()
-        )
-        self.settings.max_concurrent_tasks = int(
-            self.dashboard_page.max_concurrent_tasks_spin.value()
-        )
-        self.settings.default_send_interval_seconds = float(
-            self.dashboard_page.default_send_interval_spin.value()
-        )
-        self.settings.template_source_account_name = (
-            self.dashboard_page.template_account_edit.text().strip()
-        )
+    def _ensure_can_modify_sending_data(self) -> None:
+        if hasattr(self.runtime_service, "ensure_can_modify_sending_data"):
+            self.runtime_service.ensure_can_modify_sending_data()
+            return
 
-        chat_id_text = self.dashboard_page.template_chat_id_edit.text().strip()
-        if chat_id_text:
-            try:
-                self.settings.template_source_chat_id = int(chat_id_text)
-            except ValueError as exc:
-                raise ValueError("素材群 Chat ID 必须是数字") from exc
-        else:
-            self.settings.template_source_chat_id = 0
+        if self.scheduler_status == "running":
+            raise RuntimeError("群发运行中，不能修改会影响发送的数据，请先停止群发调度器")
+
+    def _sync_settings_from_dashboard(self) -> None:
+        if hasattr(self.dashboard_page, "scheduler_tick_spin"):
+            self.settings.scheduler_tick_seconds = float(
+                self.dashboard_page.scheduler_tick_spin.value()
+            )
+
+        if hasattr(self.dashboard_page, "max_concurrent_tasks_spin"):
+            self.settings.max_concurrent_tasks = int(
+                self.dashboard_page.max_concurrent_tasks_spin.value()
+            )
+
+        if hasattr(self.dashboard_page, "default_send_interval_spin"):
+            self.settings.default_send_interval_seconds = float(
+                self.dashboard_page.default_send_interval_spin.value()
+            )
+
+        if hasattr(self.dashboard_page, "template_account_edit"):
+            self.settings.template_source_account_name = (
+                self.dashboard_page.template_account_edit.text().strip()
+            )
+
+        if hasattr(self.dashboard_page, "template_chat_id_edit"):
+            chat_id_text = self.dashboard_page.template_chat_id_edit.text().strip()
+            if chat_id_text:
+                try:
+                    self.settings.template_source_chat_id = int(chat_id_text)
+                except ValueError as exc:
+                    raise ValueError("素材群 Chat ID 必须是数字") from exc
+            else:
+                self.settings.template_source_chat_id = 0
 
     def _get_selected_account_index(self) -> int:
         selected_rows = self.account_page.table.selectionModel().selectedRows()
@@ -329,6 +401,31 @@ class MainWindow(QMainWindow):
 
         return changed
 
+    def _remove_template_from_tasks(self, template_id: str) -> bool:
+        target_template_id = str(template_id or "").strip()
+        if not target_template_id:
+            return False
+
+        changed = False
+
+        for task in self.tasks:
+            template_ids = self._task_template_ids(task)
+            filtered_template_ids = [
+                value for value in template_ids if value != target_template_id
+            ]
+
+            if filtered_template_ids != template_ids:
+                task.template_ids = filtered_template_ids
+                changed = True
+
+            if str(getattr(task, "template_id", "") or "").strip() == target_template_id:
+                task.template_id = (
+                    filtered_template_ids[0] if filtered_template_ids else ""
+                )
+                changed = True
+
+        return changed
+
     @staticmethod
     def _safe_int(value: Any, default: int = 0) -> int:
         try:
@@ -376,6 +473,21 @@ class MainWindow(QMainWindow):
             group_ids.insert(0, legacy_group_id)
 
         return group_ids
+
+    @staticmethod
+    def _task_template_ids(task) -> list[str]:
+        template_ids: list[str] = []
+
+        for raw_template_id in getattr(task, "template_ids", []) or []:
+            value = str(raw_template_id or "").strip()
+            if value and value not in template_ids:
+                template_ids.append(value)
+
+        legacy_template_id = str(getattr(task, "template_id", "") or "").strip()
+        if legacy_template_id and legacy_template_id not in template_ids:
+            template_ids.insert(0, legacy_template_id)
+
+        return template_ids
 
     def _validate_task_accounts(self, task) -> None:
         account_names = self._task_account_names(task)
@@ -445,8 +557,31 @@ class MainWindow(QMainWindow):
         message_mode = str(getattr(task, "message_mode", "") or "").strip()
 
         if message_mode == MESSAGE_MODE_TEMPLATE:
+            template_ids = self._task_template_ids(task)
+            if not template_ids:
+                raise ValueError("模板消息必须至少选择一个模板")
+
+            existing_template_ids = {template.template_id for template in self.templates}
+            missing_template_ids = [
+                template_id
+                for template_id in template_ids
+                if template_id not in existing_template_ids
+            ]
+
+            if missing_template_ids:
+                raise ValueError(
+                    "模板不存在："
+                    + "、".join(missing_template_ids)
+                )
+
+            task.template_ids = template_ids
+
             if not str(getattr(task, "template_id", "") or "").strip():
-                raise ValueError("模板消息必须选择模板")
+                task.template_id = template_ids[0]
+
+            if task.template_id not in template_ids:
+                task.template_id = template_ids[0]
+
             return
 
         if message_mode == MESSAGE_MODE_TEXT:
@@ -482,13 +617,25 @@ class MainWindow(QMainWindow):
         self.refresh_all_views()
         self.statusBar().showMessage("模板列表已自动刷新", 3000)
 
+    def on_noise_pool_changed(self) -> None:
+        self.statusBar().showMessage("噪音池已更新", 3000)
+
     def on_templates_sync_timer(self) -> None:
         try:
-            self.runtime_service.sync_templates_from_disk()
+            changed = self.runtime_service.sync_templates_from_disk()
+            if changed:
+                self._sync_state_from_runtime()
+                self.refresh_all_views()
+
+            if hasattr(self.runtime_service, "sync_noise_pool_from_disk"):
+                self.runtime_service.sync_noise_pool_from_disk()
+
+            self._sync_state_from_runtime()
+
         except Exception as exc:
             self.on_runtime_log_received(
                 "WARNING",
-                f"自动同步模板列表失败：{exc}",
+                f"自动同步配置失败：{exc}",
             )
 
     def on_code_input_required(
@@ -532,6 +679,7 @@ class MainWindow(QMainWindow):
 
     def on_save_all_clicked(self) -> None:
         try:
+            self._ensure_can_modify_sending_data()
             self._sync_settings_from_dashboard()
             self.runtime_service.save_settings(self.settings)
             self.runtime_service.save_accounts(self.accounts)
@@ -548,6 +696,13 @@ class MainWindow(QMainWindow):
         try:
             self.runtime_service.reload_config_cache()
             self._sync_state_from_runtime()
+
+            if hasattr(self.config_page, "reload_from_runtime"):
+                self.config_page.reload_from_runtime()
+
+            if hasattr(self.noise_page, "reload_from_runtime"):
+                self.noise_page.reload_from_runtime()
+
             self.refresh_all_views()
             self._show_info("配置已重新加载")
         except Exception as exc:
@@ -556,7 +711,10 @@ class MainWindow(QMainWindow):
     def on_start_all_clicked(self) -> None:
         try:
             self._sync_settings_from_dashboard()
-            self.runtime_service.save_settings(self.settings)
+
+            if not self.runtime_service.is_scheduler_running():
+                self.runtime_service.save_settings(self.settings)
+
             self.runtime_service.start_all()
         except Exception as exc:
             self._show_error(f"启动失败：{exc}")
@@ -585,6 +743,7 @@ class MainWindow(QMainWindow):
 
     def on_save_account_clicked(self) -> None:
         try:
+            self._ensure_can_modify_sending_data()
             account = self.account_page.get_form_account()
 
             if not account.account_name:
@@ -595,6 +754,14 @@ class MainWindow(QMainWindow):
                 raise ValueError("API Hash 不能为空")
             if not account.phone:
                 raise ValueError("手机号不能为空")
+
+            if not account.session_name and getattr(
+                self.settings,
+                "default_session_name_follow_account",
+                True,
+            ):
+                account.session_name = account.account_name
+
             if not account.session_name:
                 raise ValueError("Session 名称不能为空")
 
@@ -638,25 +805,29 @@ class MainWindow(QMainWindow):
             self._show_error(f"保存账号失败：{exc}")
 
     def on_delete_account_clicked(self) -> None:
-        selected_index = self._get_selected_account_index()
+        try:
+            self._ensure_can_modify_sending_data()
+            selected_index = self._get_selected_account_index()
 
-        if selected_index < 0 or selected_index >= len(self.accounts):
-            self._show_error("请先选择一个账号")
-            return
+            if selected_index < 0 or selected_index >= len(self.accounts):
+                self._show_error("请先选择一个账号")
+                return
 
-        account_name = self.accounts[selected_index].account_name
-        self.accounts.pop(selected_index)
+            account_name = self.accounts[selected_index].account_name
+            self.accounts.pop(selected_index)
 
-        tasks_changed = self._remove_account_from_tasks(account_name)
+            tasks_changed = self._remove_account_from_tasks(account_name)
 
-        self.runtime_service.save_accounts(self.accounts)
-        if tasks_changed:
-            self.runtime_service.save_tasks(self.tasks)
+            self.runtime_service.save_accounts(self.accounts)
+            if tasks_changed:
+                self.runtime_service.save_tasks(self.tasks)
 
-        self.status_map.pop(account_name, None)
-        self.account_page.clear_form()
-        self.refresh_all_views()
-        self._show_info("账号已删除，相关任务的账号池已同步更新")
+            self.status_map.pop(account_name, None)
+            self.account_page.clear_form()
+            self.refresh_all_views()
+            self._show_info("账号已删除，相关任务的账号池已同步更新")
+        except Exception as exc:
+            self._show_error(f"删除账号失败：{exc}")
 
     def on_login_account_clicked(self) -> None:
         account_name = self.account_page.get_selected_account_name()
@@ -694,12 +865,16 @@ class MainWindow(QMainWindow):
 
     def on_save_group_clicked(self) -> None:
         try:
+            self._ensure_can_modify_sending_data()
             group = self.group_page.get_form_group()
 
             if not group.group_name:
                 raise ValueError("群组名称不能为空")
             if not group.chat_id:
                 raise ValueError("Chat ID 不能为空")
+
+            if getattr(self.settings, "default_group_username_normalize", True):
+                group.username = str(group.username or "").strip().lstrip("@")
 
             existing_index = next(
                 (
@@ -722,26 +897,31 @@ class MainWindow(QMainWindow):
             self._show_error(f"保存群组失败：{exc}")
 
     def on_delete_group_clicked(self) -> None:
-        row = self.group_page.get_selected_row()
-        if row < 0 or row >= len(self.groups):
-            self._show_error("请先选择一个群组")
-            return
+        try:
+            self._ensure_can_modify_sending_data()
+            row = self.group_page.get_selected_row()
+            if row < 0 or row >= len(self.groups):
+                self._show_error("请先选择一个群组")
+                return
 
-        group_id = self.groups[row].group_id
-        self.groups.pop(row)
+            group_id = self.groups[row].group_id
+            self.groups.pop(row)
 
-        tasks_changed = self._remove_group_from_tasks(group_id)
+            tasks_changed = self._remove_group_from_tasks(group_id)
 
-        self.runtime_service.save_groups(self.groups)
-        if tasks_changed:
-            self.runtime_service.save_tasks(self.tasks)
+            self.runtime_service.save_groups(self.groups)
+            if tasks_changed:
+                self.runtime_service.save_tasks(self.tasks)
 
-        self.group_page.clear_form()
-        self.refresh_all_views()
-        self._show_info("群组已删除，相关任务的目标群组池已同步更新")
+            self.group_page.clear_form()
+            self.refresh_all_views()
+            self._show_info("群组已删除，相关任务的目标群组池已同步更新")
+        except Exception as exc:
+            self._show_error(f"删除群组失败：{exc}")
 
     def on_save_task_clicked(self) -> None:
         try:
+            self._ensure_can_modify_sending_data()
             task = self.task_page.get_form_task()
 
             if not task.task_name:
@@ -772,52 +952,52 @@ class MainWindow(QMainWindow):
             self._show_error(f"保存任务失败：{exc}")
 
     def on_delete_task_clicked(self) -> None:
-        row = self.task_page.get_selected_row()
-        if row < 0 or row >= len(self.tasks):
-            self._show_error("请先选择一个任务")
-            return
+        try:
+            self._ensure_can_modify_sending_data()
+            row = self.task_page.get_selected_row()
+            if row < 0 or row >= len(self.tasks):
+                self._show_error("请先选择一个任务")
+                return
 
-        self.tasks.pop(row)
-        self.runtime_service.save_tasks(self.tasks)
-        self.task_page.clear_form()
-        self.refresh_all_views()
-        self._show_info("任务已删除")
+            self.tasks.pop(row)
+            self.runtime_service.save_tasks(self.tasks)
+            self.task_page.clear_form()
+            self.refresh_all_views()
+            self._show_info("任务已删除")
+        except Exception as exc:
+            self._show_error(f"删除任务失败：{exc}")
 
     def on_task_up_clicked(self) -> None:
-        row = self.task_page.get_selected_row()
-        if row <= 0:
-            return
+        try:
+            self._ensure_can_modify_sending_data()
+            row = self.task_page.get_selected_row()
+            if row <= 0:
+                return
 
-        self.tasks[row - 1], self.tasks[row] = self.tasks[row], self.tasks[row - 1]
-        self.runtime_service.save_tasks(self.tasks)
-        self.refresh_all_views()
-        self.task_page.table.selectRow(row - 1)
+            self.tasks[row - 1], self.tasks[row] = self.tasks[row], self.tasks[row - 1]
+            self.runtime_service.save_tasks(self.tasks)
+            self.refresh_all_views()
+            self.task_page.table.selectRow(row - 1)
+        except Exception as exc:
+            self._show_error(f"移动任务失败：{exc}")
 
     def on_task_down_clicked(self) -> None:
-        row = self.task_page.get_selected_row()
-        if row < 0 or row >= len(self.tasks) - 1:
-            return
-
-        self.tasks[row + 1], self.tasks[row] = self.tasks[row], self.tasks[row + 1]
-        self.runtime_service.save_tasks(self.tasks)
-        self.refresh_all_views()
-        self.task_page.table.selectRow(row + 1)
-
-    def on_send_task_once_clicked(self) -> None:
-        task_id = self.task_page.get_selected_task_id()
-        if not task_id:
-            self._show_error("请先选择一个任务")
-            return
-
         try:
+            self._ensure_can_modify_sending_data()
+            row = self.task_page.get_selected_row()
+            if row < 0 or row >= len(self.tasks) - 1:
+                return
+
+            self.tasks[row + 1], self.tasks[row] = self.tasks[row], self.tasks[row + 1]
             self.runtime_service.save_tasks(self.tasks)
-            self.runtime_service.send_task_once(task_id)
-            self.statusBar().showMessage("已提交立即发送任务", 3000)
+            self.refresh_all_views()
+            self.task_page.table.selectRow(row + 1)
         except Exception as exc:
-            self._show_error(f"立即发送失败：{exc}")
+            self._show_error(f"移动任务失败：{exc}")
 
     def on_save_template_clicked(self) -> None:
         try:
+            self._ensure_can_modify_sending_data()
             template = self.template_page.get_form_template()
 
             if not template.template_name:
@@ -850,23 +1030,27 @@ class MainWindow(QMainWindow):
             self._show_error(f"保存模板失败：{exc}")
 
     def on_delete_template_clicked(self) -> None:
-        row = self.template_page.get_selected_row()
-        if row < 0 or row >= len(self.templates):
-            self._show_error("请先选择一个模板")
-            return
+        try:
+            self._ensure_can_modify_sending_data()
+            row = self.template_page.get_selected_row()
+            if row < 0 or row >= len(self.templates):
+                self._show_error("请先选择一个模板")
+                return
 
-        template_id = self.templates[row].template_id
-        self.templates.pop(row)
+            template_id = self.templates[row].template_id
+            self.templates.pop(row)
 
-        for task in self.tasks:
-            if task.template_id == template_id:
-                task.template_id = ""
+            tasks_changed = self._remove_template_from_tasks(template_id)
 
-        self.runtime_service.save_templates(self.templates)
-        self.runtime_service.save_tasks(self.tasks)
-        self.template_page.clear_form()
-        self.refresh_all_views()
-        self._show_info("模板已删除，相关任务的模板选择已清空")
+            self.runtime_service.save_templates(self.templates)
+            if tasks_changed:
+                self.runtime_service.save_tasks(self.tasks)
+
+            self.template_page.clear_form()
+            self.refresh_all_views()
+            self._show_info("模板已删除，相关任务的模板池已同步更新")
+        except Exception as exc:
+            self._show_error(f"删除模板失败：{exc}")
 
     def closeEvent(self, event) -> None:
         try:

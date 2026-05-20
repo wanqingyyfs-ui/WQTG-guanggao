@@ -58,8 +58,9 @@ class TelegramClientManager:
     def _build_accounts_map(accounts: list[AccountConfig]) -> dict[str, AccountConfig]:
         result: dict[str, AccountConfig] = {}
 
-        for account in accounts:
+        for account in accounts or []:
             account_name = str(account.account_name or "").strip()
+
             if account_name:
                 result[account_name] = account
 
@@ -91,14 +92,20 @@ class TelegramClientManager:
 
     def _emit_status(self, account_name: str, status: str, detail: str = "") -> None:
         if callable(self.status_callback):
-            self.status_callback(str(account_name or ""), str(status or ""), str(detail or ""))
+            self.status_callback(
+                str(account_name or ""),
+                str(status or ""),
+                str(detail or ""),
+            )
 
     def _build_session_path(self, session_name: str) -> str:
         safe_session_name = str(session_name or "").strip()
+
         if not safe_session_name:
             raise RuntimeError("Session 名称不能为空")
 
-        base_dir_text = str(self.settings.sessions_dir or "").strip()
+        base_dir_text = str(getattr(self.settings, "sessions_dir", "") or "").strip()
+
         if base_dir_text:
             base_dir = Path(base_dir_text).expanduser()
         else:
@@ -125,8 +132,11 @@ class TelegramClientManager:
 
     async def _get_or_create_client(self, account: AccountConfig) -> TelegramClient:
         account_name = str(account.account_name or "").strip()
-        client_key = self._build_client_key(account)
 
+        if not account_name:
+            raise RuntimeError("账号名称不能为空")
+
+        client_key = self._build_client_key(account)
         existing_client = self.clients.get(account_name)
         existing_key = self.client_keys.get(account_name)
 
@@ -159,11 +169,17 @@ class TelegramClientManager:
         await client.connect()
 
         if await client.is_user_authorized():
-            self._emit_log("info", f"[{account.account_name}] 已复用现有 session，无需重新登录")
+            self._emit_log(
+                "info",
+                f"[{account.account_name}] 已复用现有 session，无需重新登录",
+            )
             self._emit_status(account.account_name, "logged_in", "已登录")
             return
 
-        self._emit_log("info", f"[{account.account_name}] 当前未登录，开始用户号登录流程")
+        self._emit_log(
+            "info",
+            f"[{account.account_name}] 当前未登录，开始用户号登录流程",
+        )
         self._emit_status(account.account_name, "logging_in", "登录中")
 
         try:
@@ -194,8 +210,14 @@ class TelegramClientManager:
             self._emit_status(account.account_name, "logged_in", "已登录")
 
         except FloodWaitError as exc:
-            self._emit_status(account.account_name, "error", f"FloodWait {exc.seconds}s")
-            raise RuntimeError(f"登录阶段触发 FloodWait，需要等待 {exc.seconds} 秒") from exc
+            self._emit_status(
+                account.account_name,
+                "error",
+                f"FloodWait {exc.seconds}s",
+            )
+            raise RuntimeError(
+                f"登录阶段触发 FloodWait，需要等待 {exc.seconds} 秒"
+            ) from exc
         except PhoneCodeInvalidError as exc:
             self._emit_status(account.account_name, "error", "验证码错误")
             raise RuntimeError("验证码错误") from exc
@@ -242,7 +264,8 @@ class TelegramClientManager:
         self.template_handler_callbacks[account_name] = on_template_message
 
     def is_account_running(self, account_name: str) -> bool:
-        client = self.clients.get(account_name)
+        safe_account_name = str(account_name or "").strip()
+        client = self.clients.get(safe_account_name)
         return bool(client and client.is_connected())
 
     def get_running_client(self, account_name: str) -> TelegramClient:
@@ -269,7 +292,9 @@ class TelegramClientManager:
 
             if input_provider is None:
                 self._emit_status(account.account_name, "error", "账号未登录")
-                raise RuntimeError(f"账号未登录，请先在界面登录账号: {account.account_name}")
+                raise RuntimeError(
+                    f"账号未登录，请先在界面登录账号: {account.account_name}"
+                )
 
         await self.start_account(
             account.account_name,
@@ -293,6 +318,8 @@ class TelegramClientManager:
                 account,
                 input_provider=input_provider,
             )
+            self._register_template_handler(account.account_name, client)
+
         except Exception as exc:
             self._emit_log("error", f"[{account.account_name}] 登录失败: {exc}")
             raise
@@ -313,7 +340,9 @@ class TelegramClientManager:
             if not await client.is_user_authorized():
                 if not allow_interactive_login:
                     self._emit_status(account.account_name, "error", "账号未登录")
-                    raise RuntimeError(f"账号未登录，请先在界面登录账号: {account.account_name}")
+                    raise RuntimeError(
+                        f"账号未登录，请先在界面登录账号: {account.account_name}"
+                    )
 
                 await self._interactive_login(
                     client,
@@ -324,7 +353,11 @@ class TelegramClientManager:
             self._register_template_handler(account.account_name, client)
 
             self._emit_status(account.account_name, "running", "运行中")
-            self._emit_log("info", f"[{account.account_name}] 客户端启动成功，账号运行中")
+            self._emit_log(
+                "info",
+                f"[{account.account_name}] 客户端启动成功，账号运行中",
+            )
+
         except Exception as exc:
             self._emit_status(account.account_name, "error", str(exc))
             self._emit_log("error", f"[{account.account_name}] 启动失败: {exc}")

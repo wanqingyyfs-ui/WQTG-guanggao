@@ -9,12 +9,17 @@ from app.core.models import (
     ACCOUNT_ROTATE_MODE_SINGLE,
     GROUP_ROTATE_MODE_ROUND_ROBIN,
     GROUP_ROTATE_MODE_SINGLE,
+    LEGACY_SCHEDULE_MODE_MANUAL,
+    MESSAGE_MODE_TEMPLATE,
+    MESSAGE_MODE_TEXT,
+    SCHEDULE_MODE_DAILY,
+    SCHEDULE_MODE_INTERVAL,
     AccountConfig,
     GroupConfig,
-    MESSAGE_MODE_TEXT,
-    SCHEDULE_MODE_MANUAL,
     SendTaskConfig,
     Settings,
+    TEMPLATE_MESSAGE_TYPE_ALBUM,
+    TEMPLATE_MESSAGE_TYPE_PHOTO,
     TEMPLATE_MESSAGE_TYPE_TEXT,
     TEMPLATE_SEND_MODE_FORWARD,
     TemplateConfig,
@@ -41,12 +46,14 @@ def _write_json_file(file_path: str | Path, data: Any) -> None:
 def _as_dict(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return value
+
     return {}
 
 
 def _to_str(value: Any, default: str = "") -> str:
     if value is None:
         return default
+
     return str(value)
 
 
@@ -57,15 +64,6 @@ def _to_int(value: Any, default: int = 0) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
-
-
-def _to_non_negative_int(value: Any, default: int = 0) -> int:
-    number = _to_int(value, default)
-
-    if number < 0:
-        return 0
-
-    return number
 
 
 def _to_float(value: Any, default: float = 0.0) -> float:
@@ -86,12 +84,32 @@ def _to_bool(value: Any, default: bool = False) -> bool:
 
     if isinstance(value, str):
         normalized = value.strip().lower()
+
         if normalized in {"1", "true", "yes", "y", "on", "是", "启用"}:
             return True
+
         if normalized in {"0", "false", "no", "n", "off", "否", "禁用"}:
             return False
 
     return bool(value)
+
+
+def _to_non_negative_int(value: Any, default: int = 0) -> int:
+    number = _to_int(value, default)
+
+    if number < 0:
+        return 0
+
+    return number
+
+
+def _seconds_to_ms(value: Any, default_seconds: float = 0.0) -> int:
+    seconds = _to_float(value, default_seconds)
+
+    if seconds < 0:
+        return 0
+
+    return int(round(seconds * 1000))
 
 
 def _to_str_list(value: Any) -> list[str]:
@@ -109,7 +127,36 @@ def _to_str_list(value: Any) -> list[str]:
 
     for item in raw_items:
         text = str(item or "").strip()
+
         if text and text not in result:
+            result.append(text)
+
+    return result
+
+
+def _to_noise_text_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+
+    if isinstance(value, str):
+        raw_items = [value]
+    elif isinstance(value, (list, tuple)):
+        raw_items = list(value)
+    else:
+        return []
+
+    result: list[str] = []
+
+    for item in raw_items:
+        if isinstance(item, dict):
+            if not _to_bool(item.get("enabled"), True):
+                continue
+
+            text = _to_str(item.get("text"), "").strip()
+        else:
+            text = _to_str(item, "").strip()
+
+        if text:
             result.append(text)
 
     return result
@@ -139,7 +186,7 @@ def _to_int_list(value: Any) -> list[int]:
         except (TypeError, ValueError):
             continue
 
-        if number not in result:
+        if number > 0 and number not in result:
             result.append(number)
 
     return result
@@ -171,6 +218,19 @@ def _normalize_group_ids(item: dict[str, Any]) -> list[str]:
     return group_ids
 
 
+def _normalize_template_ids(item: dict[str, Any]) -> list[str]:
+    template_ids = _to_str_list(item.get("template_ids"))
+    template_id = _to_str(item.get("template_id", "")).strip()
+
+    if not template_ids and template_id:
+        template_ids = [template_id]
+
+    if template_id and template_id not in template_ids:
+        template_ids.insert(0, template_id)
+
+    return template_ids
+
+
 def _normalize_account_rotate_mode(value: Any) -> str:
     rotate_mode = _to_str(value, ACCOUNT_ROTATE_MODE_SINGLE).strip()
 
@@ -193,6 +253,76 @@ def _normalize_group_rotate_mode(value: Any) -> str:
         return GROUP_ROTATE_MODE_SINGLE
 
     return rotate_mode
+
+
+def _normalize_message_mode(value: Any) -> str:
+    message_mode = _to_str(value, MESSAGE_MODE_TEMPLATE).strip()
+
+    if message_mode in {MESSAGE_MODE_TEXT, MESSAGE_MODE_TEMPLATE}:
+        return message_mode
+
+    return MESSAGE_MODE_TEMPLATE
+
+
+def _normalize_schedule_mode(value: Any) -> str:
+    schedule_mode = _to_str(value, SCHEDULE_MODE_INTERVAL).strip()
+
+    if schedule_mode == LEGACY_SCHEDULE_MODE_MANUAL:
+        return SCHEDULE_MODE_INTERVAL
+
+    if schedule_mode in {SCHEDULE_MODE_INTERVAL, SCHEDULE_MODE_DAILY}:
+        return schedule_mode
+
+    return SCHEDULE_MODE_INTERVAL
+
+
+def _normalize_message_type(value: Any) -> str:
+    message_type = _to_str(value, TEMPLATE_MESSAGE_TYPE_TEXT).strip()
+
+    if message_type in {
+        TEMPLATE_MESSAGE_TYPE_TEXT,
+        TEMPLATE_MESSAGE_TYPE_PHOTO,
+        TEMPLATE_MESSAGE_TYPE_ALBUM,
+    }:
+        return message_type
+
+    return TEMPLATE_MESSAGE_TYPE_TEXT
+
+
+def _normalize_send_mode(value: Any) -> str:
+    send_mode = _to_str(value, TEMPLATE_SEND_MODE_FORWARD).strip()
+
+    if send_mode:
+        return send_mode
+
+    return TEMPLATE_SEND_MODE_FORWARD
+
+
+def _normalize_ms_range(
+    item: dict[str, Any],
+    min_key: str,
+    max_key: str,
+    legacy_seconds_key: str,
+) -> tuple[int, int]:
+    if min_key in item or max_key in item:
+        min_ms = _to_non_negative_int(item.get(min_key), 0)
+        max_ms = _to_non_negative_int(item.get(max_key), min_ms)
+    else:
+        legacy_ms = _seconds_to_ms(item.get(legacy_seconds_key), 0)
+        min_ms = legacy_ms
+        max_ms = legacy_ms
+
+    if max_ms < min_ms:
+        max_ms = min_ms
+
+    return min_ms, max_ms
+
+
+def _normalize_interval_ms(item: dict[str, Any]) -> int:
+    if "interval_ms" in item:
+        return _to_non_negative_int(item.get("interval_ms"), 3600000)
+
+    return _seconds_to_ms(item.get("interval_seconds"), 3600)
 
 
 def load_accounts(file_path: str) -> list[AccountConfig]:
@@ -274,6 +404,25 @@ def load_tasks(file_path: str) -> list[SendTaskConfig]:
         if not group_id and group_ids:
             group_id = group_ids[0]
 
+        template_ids = _normalize_template_ids(item)
+        template_id = _to_str(item.get("template_id", "")).strip()
+        if not template_id and template_ids:
+            template_id = template_ids[0]
+
+        account_delay_min_ms, account_delay_max_ms = _normalize_ms_range(
+            item=item,
+            min_key="account_delay_min_ms",
+            max_key="account_delay_max_ms",
+            legacy_seconds_key="account_delay_seconds",
+        )
+        group_delay_min_ms, group_delay_max_ms = _normalize_ms_range(
+            item=item,
+            min_key="group_delay_min_ms",
+            max_key="group_delay_max_ms",
+            legacy_seconds_key="group_delay_seconds",
+        )
+        interval_ms = _normalize_interval_ms(item)
+
         tasks.append(
             SendTaskConfig(
                 task_id=_to_str(item.get("task_id", "")).strip(),
@@ -288,9 +437,11 @@ def load_tasks(file_path: str) -> list[SendTaskConfig]:
                     item.get("current_account_index"),
                     0,
                 ),
+                account_delay_min_ms=account_delay_min_ms,
+                account_delay_max_ms=account_delay_max_ms,
                 account_delay_seconds=_to_non_negative_int(
                     item.get("account_delay_seconds"),
-                    0,
+                    int(account_delay_min_ms // 1000),
                 ),
                 group_id=group_id,
                 group_ids=group_ids,
@@ -301,19 +452,21 @@ def load_tasks(file_path: str) -> list[SendTaskConfig]:
                     item.get("current_group_index"),
                     0,
                 ),
+                group_delay_min_ms=group_delay_min_ms,
+                group_delay_max_ms=group_delay_max_ms,
                 group_delay_seconds=_to_non_negative_int(
                     item.get("group_delay_seconds"),
-                    0,
+                    int(group_delay_min_ms // 1000),
                 ),
-                message_mode=_to_str(item.get("message_mode", MESSAGE_MODE_TEXT)),
+                message_mode=_normalize_message_mode(item.get("message_mode")),
                 text=_to_str(item.get("text", "")),
-                template_id=_to_str(item.get("template_id", "")).strip(),
-                schedule_mode=_to_str(
-                    item.get("schedule_mode", SCHEDULE_MODE_MANUAL)
-                ),
-                interval_seconds=max(
-                    1,
-                    _to_int(item.get("interval_seconds"), 3600),
+                template_ids=template_ids,
+                template_id=template_id,
+                schedule_mode=_normalize_schedule_mode(item.get("schedule_mode")),
+                interval_ms=interval_ms,
+                interval_seconds=_to_non_negative_int(
+                    item.get("interval_seconds"),
+                    int(interval_ms // 1000),
                 ),
                 daily_time=_to_str(item.get("daily_time", "09:00")).strip()
                 or "09:00",
@@ -359,18 +512,17 @@ def load_templates(file_path: str) -> list[TemplateConfig]:
                 source_chat_id=_to_int(item.get("source_chat_id"), 0),
                 source_chat_title=_to_str(item.get("source_chat_title", "")),
                 source_message_ids=_to_int_list(item.get("source_message_ids")),
-                message_type=_to_str(
-                    item.get("message_type", TEMPLATE_MESSAGE_TYPE_TEXT)
-                ),
-                send_mode=_to_str(item.get("send_mode", TEMPLATE_SEND_MODE_FORWARD)),
+                message_type=_normalize_message_type(item.get("message_type")),
+                send_mode=_normalize_send_mode(item.get("send_mode")),
                 preview_text=_to_str(item.get("preview_text", "")),
                 raw_text=_to_str(item.get("raw_text", "")),
                 has_custom_emoji=_to_bool(item.get("has_custom_emoji"), False),
                 has_media=_to_bool(item.get("has_media"), False),
-                media_count=_to_int(item.get("media_count"), 0),
+                media_count=_to_non_negative_int(item.get("media_count"), 0),
                 preview_images=_to_str_list(item.get("preview_images")),
                 enabled=_to_bool(item.get("enabled"), True),
                 created_at=_to_str(item.get("created_at", "")).strip(),
+                remark=_to_str(item.get("remark", "")),
             )
         )
 
@@ -387,31 +539,22 @@ def load_settings(file_path: str) -> Settings:
     if not isinstance(data, dict):
         raise ValueError("settings.json 必须是对象")
 
-    return Settings.from_dict(
-        {
-            "app_name": _to_str(data.get("app_name", "telegram_user_group_sender_gui")),
-            "log_level": _to_str(data.get("log_level", "INFO")),
-            "log_file": _to_str(data.get("log_file", "logs/app.log")),
-            "sessions_dir": _to_str(data.get("sessions_dir", "")),
-            "scheduler_tick_seconds": _to_float(
-                data.get("scheduler_tick_seconds"),
-                1.0,
-            ),
-            "max_concurrent_tasks": _to_int(data.get("max_concurrent_tasks"), 1),
-            "default_send_interval_seconds": _to_float(
-                data.get("default_send_interval_seconds"),
-                1.0,
-            ),
-            "template_source_account_name": _to_str(
-                data.get("template_source_account_name", "")
-            ).strip(),
-            "template_source_chat_id": _to_int(
-                data.get("template_source_chat_id"),
-                0,
-            ),
-        }
-    )
+    return Settings.from_dict(data)
 
 
 def save_settings(file_path: str, settings: Settings) -> None:
     _write_json_file(file_path, settings.to_dict())
+
+
+def load_noise_pool(file_path: str) -> list[str]:
+    data = _read_json_file(file_path)
+
+    if not isinstance(data, list):
+        raise ValueError("noise_pool.json 必须是数组")
+
+    return _to_noise_text_list(data)
+
+
+def save_noise_pool(file_path: str, noise_texts: list[str]) -> None:
+    safe_texts = _to_noise_text_list(noise_texts)
+    _write_json_file(file_path, safe_texts)
