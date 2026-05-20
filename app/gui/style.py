@@ -41,6 +41,10 @@ def build_app_qss(settings: Any | None = None) -> str:
         getattr(settings, "input_font_size", global_font_size),
         global_font_size,
     )
+    floating_panel_font_size = _safe_font_size(
+        getattr(settings, "floating_panel_font_size", global_font_size),
+        global_font_size,
+    )
 
     return f"""
 QWidget {{
@@ -280,6 +284,24 @@ QLabel#SectionTitleLabel {{
     font-weight: 700;
 }}
 
+QLabel#DashboardStatusLabel {{
+    color: #475569;
+    background: transparent;
+    font-size: {global_font_size + 1}px;
+}}
+
+QLabel#DashboardHintLabel {{
+    color: #64748b;
+    background: transparent;
+    font-size: {global_font_size}px;
+}}
+
+QFrame#DashboardCard {{
+    background: #ffffff;
+    border: 1px solid #e5e7eb;
+    border-radius: 18px;
+}}
+
 QStatusBar {{
     background: #ffffff;
     border-top: 1px solid #e5e7eb;
@@ -347,15 +369,42 @@ QDockWidget {{
     border: 1px solid #d9dee7;
     titlebar-close-icon: none;
     titlebar-normal-icon: none;
-    font-size: {global_font_size}px;
+    font-size: {floating_panel_font_size}px;
 }}
 
 QDockWidget::title {{
     background: #eef2f7;
     color: #111827;
-    padding: 8px;
+    padding: 9px 10px;
     font-weight: 600;
     text-align: left;
+    font-size: {floating_panel_font_size}px;
+}}
+
+QDockWidget QWidget {{
+    font-size: {floating_panel_font_size}px;
+}}
+
+QDockWidget QPushButton {{
+    font-size: {button_font_size}px;
+}}
+
+QDockWidget QLineEdit,
+QDockWidget QTextEdit,
+QDockWidget QPlainTextEdit,
+QDockWidget QComboBox,
+QDockWidget QSpinBox,
+QDockWidget QDoubleSpinBox,
+QDockWidget QTimeEdit,
+QDockWidget QDateEdit,
+QDockWidget QDateTimeEdit,
+QDockWidget QListWidget {{
+    font-size: {input_font_size}px;
+}}
+
+QScrollArea#ConfigDockScrollArea {{
+    background: #ffffff;
+    border: none;
 }}
 
 QMessageBox {{

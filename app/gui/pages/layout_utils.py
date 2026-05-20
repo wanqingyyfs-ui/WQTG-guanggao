@@ -5,7 +5,10 @@ from PySide6.QtWidgets import (
     QAbstractSpinBox,
     QComboBox,
     QFormLayout,
+    QGridLayout,
     QGroupBox,
+    QHBoxLayout,
+    QLabel,
     QLineEdit,
     QListWidget,
     QPlainTextEdit,
@@ -14,9 +17,9 @@ from PySide6.QtWidgets import (
     QSplitter,
     QTableWidget,
     QTextEdit,
+    QVBoxLayout,
     QWidget,
 )
-
 
 CONTROL_MIN_HEIGHT = 54
 TEXT_EDIT_MIN_HEIGHT = 150
@@ -148,6 +151,19 @@ def style_form_layout(form_layout: QFormLayout) -> None:
     )
 
 
+def style_compact_form_layout(form_layout: QFormLayout) -> None:
+    form_layout.setContentsMargins(18, 18, 18, 18)
+    form_layout.setHorizontalSpacing(16)
+    form_layout.setVerticalSpacing(12)
+    form_layout.setLabelAlignment(
+        Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+    )
+    form_layout.setFormAlignment(Qt.AlignmentFlag.AlignTop)
+    form_layout.setFieldGrowthPolicy(
+        QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow
+    )
+
+
 def style_group_box(group_box: QGroupBox) -> None:
     group_box.setStyleSheet(GROUP_BOX_QSS)
     group_box.setMinimumHeight(0)
@@ -186,6 +202,18 @@ def make_scroll_area(
         QSizePolicy.Policy.Expanding,
     )
     return scroll_area
+
+
+def make_dock_scroll_area(
+    widget: QWidget,
+    minimum_height: int = 0,
+) -> QScrollArea:
+    return make_scroll_area(
+        widget=widget,
+        minimum_height=minimum_height,
+        horizontal=Qt.ScrollBarPolicy.ScrollBarAsNeeded,
+        vertical=Qt.ScrollBarPolicy.ScrollBarAsNeeded,
+    )
 
 
 def make_vertical_splitter(
@@ -250,3 +278,88 @@ def make_horizontal_splitter(
         splitter.setSizes([520, 640])
 
     return splitter
+
+
+def make_two_column_form_container(
+    left_form: QFormLayout,
+    right_form: QFormLayout,
+    left_title: str = "",
+    right_title: str = "",
+) -> QWidget:
+    container = QWidget()
+    layout = QGridLayout(container)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setHorizontalSpacing(18)
+    layout.setVerticalSpacing(12)
+    layout.setColumnStretch(0, 1)
+    layout.setColumnStretch(1, 1)
+
+    left_widget = QWidget()
+    left_layout = QVBoxLayout(left_widget)
+    left_layout.setContentsMargins(0, 0, 0, 0)
+    left_layout.setSpacing(10)
+
+    if left_title:
+        label = QLabel(left_title)
+        label.setObjectName("SectionTitleLabel")
+        left_layout.addWidget(label)
+
+    style_compact_form_layout(left_form)
+    left_layout.addLayout(left_form)
+
+    right_widget = QWidget()
+    right_layout = QVBoxLayout(right_widget)
+    right_layout.setContentsMargins(0, 0, 0, 0)
+    right_layout.setSpacing(10)
+
+    if right_title:
+        label = QLabel(right_title)
+        label.setObjectName("SectionTitleLabel")
+        right_layout.addWidget(label)
+
+    style_compact_form_layout(right_form)
+    right_layout.addLayout(right_form)
+
+    layout.addWidget(left_widget, 0, 0)
+    layout.addWidget(right_widget, 0, 1)
+
+    return container
+
+
+def make_button_row(
+    *buttons: QWidget,
+    add_stretch: bool = True,
+    margins: tuple[int, int, int, int] = (0, 0, 0, 0),
+    spacing: int = 10,
+) -> QWidget:
+    container = QWidget()
+    layout = QHBoxLayout(container)
+    layout.setContentsMargins(*margins)
+    layout.setSpacing(spacing)
+
+    for button in buttons:
+        layout.addWidget(button)
+
+    if add_stretch:
+        layout.addStretch(1)
+
+    return container
+
+
+def make_page_container(
+    title: str,
+    content: QWidget,
+    margins: tuple[int, int, int, int] = (0, 0, 0, 0),
+    spacing: int = 14,
+) -> QWidget:
+    container = QWidget()
+    layout = QVBoxLayout(container)
+    layout.setContentsMargins(*margins)
+    layout.setSpacing(spacing)
+
+    title_label = QLabel(title)
+    title_label.setObjectName("PageTitleLabel")
+    layout.addWidget(title_label)
+    layout.addWidget(content, 1)
+
+    return container
