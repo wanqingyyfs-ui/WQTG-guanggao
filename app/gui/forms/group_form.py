@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPlainTextEdit,
     QPushButton,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -45,12 +46,14 @@ class GroupForm(QWidget):
 
         self.remark_edit = QPlainTextEdit()
         self.remark_edit.setPlaceholderText("可选，用于记录这个群的用途")
-        style_text_editor(self.remark_edit, 120)
+        style_text_editor(self.remark_edit, 140)
 
         self.enabled_check = QCheckBox("启用")
 
         self.add_button = QPushButton("新增")
         self.save_button = QPushButton("保存")
+        self._style_action_button(self.add_button)
+        self._style_action_button(self.save_button)
 
         self._build_ui()
         self.add_button.clicked.connect(self.add_requested.emit)
@@ -58,10 +61,18 @@ class GroupForm(QWidget):
         self.clear_form()
 
     def _build_ui(self) -> None:
+        self.setMinimumSize(560, 460)
+        self.setSizePolicy(
+            QSizePolicy.Policy.Preferred,
+            QSizePolicy.Policy.MinimumExpanding,
+        )
+
         grid = QGridLayout()
-        grid.setContentsMargins(0, 0, 0, 0)
-        grid.setHorizontalSpacing(14)
-        grid.setVerticalSpacing(10)
+        grid.setContentsMargins(10, 8, 10, 8)
+        grid.setHorizontalSpacing(18)
+        grid.setVerticalSpacing(14)
+        grid.setColumnMinimumWidth(0, 88)
+        grid.setColumnMinimumWidth(2, 82)
         grid.setColumnStretch(1, 1)
         grid.setColumnStretch(3, 1)
 
@@ -77,19 +88,27 @@ class GroupForm(QWidget):
         grid.addWidget(self.remark_edit, 2, 1, 1, 3)
 
         button_layout = QHBoxLayout()
-        button_layout.setSpacing(10)
+        button_layout.setContentsMargins(0, 10, 0, 0)
+        button_layout.setSpacing(14)
+        button_layout.addStretch(1)
         button_layout.addWidget(self.add_button)
         button_layout.addWidget(self.save_button)
         button_layout.addStretch(1)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(12)
+        layout.setContentsMargins(12, 10, 12, 10)
+        layout.setSpacing(16)
+        layout.addSpacing(18)
         layout.addLayout(grid)
-        layout.addLayout(button_layout)
         layout.addStretch(1)
+        layout.addLayout(button_layout)
 
         apply_large_inputs(self)
+
+    @staticmethod
+    def _style_action_button(button: QPushButton) -> None:
+        button.setMinimumWidth(120)
+        button.setMinimumHeight(38)
 
     @staticmethod
     def _add_labeled_widget(

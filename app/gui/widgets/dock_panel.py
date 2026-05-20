@@ -12,6 +12,13 @@ from PySide6.QtWidgets import (
 )
 
 
+DOCK_MIN_WIDTH = 620
+DOCK_MIN_HEIGHT = 520
+DOCK_CONTENT_MAX_WIDTH = 920
+DOCK_CONTENT_MARGINS = (34, 34, 34, 30)
+DOCK_CONTENT_SPACING = 18
+
+
 class ConfigDockWidget(QDockWidget):
     """
     通用配置浮动面板。
@@ -21,6 +28,7 @@ class ConfigDockWidget(QDockWidget):
     - 支持停靠、浮动、关闭、调整大小。
     - 关闭后不销毁内容，后续点击“配置”按钮可以再次打开。
     - 内容区默认使用 QScrollArea，避免表单较长时撑破窗口。
+    - 面板保留统一外边距、合理最小尺寸，并让表单内容在面板中更居中。
     """
 
     closed = Signal(str)
@@ -31,8 +39,8 @@ class ConfigDockWidget(QDockWidget):
         title: str,
         content: QWidget | None = None,
         parent: QWidget | None = None,
-        default_width: int = 520,
-        default_height: int = 620,
+        default_width: int = 620,
+        default_height: int = 640,
         font_size: int = 13,
         floating: bool = False,
         allowed_areas: Qt.DockWidgetArea = (
@@ -43,8 +51,14 @@ class ConfigDockWidget(QDockWidget):
         super().__init__(title, parent)
 
         self._object_name = str(object_name or "").strip() or "configDockWidget"
-        self._default_width = self._safe_positive_int(default_width, 520)
-        self._default_height = self._safe_positive_int(default_height, 620)
+        self._default_width = max(
+            self._safe_positive_int(default_width, 620),
+            DOCK_MIN_WIDTH,
+        )
+        self._default_height = max(
+            self._safe_positive_int(default_height, 640),
+            DOCK_MIN_HEIGHT,
+        )
         self._font_size = self._safe_font_size(font_size, 13)
         self._content: QWidget | None = None
 
@@ -55,8 +69,7 @@ class ConfigDockWidget(QDockWidget):
             | QDockWidget.DockWidgetFeature.DockWidgetMovable
             | QDockWidget.DockWidgetFeature.DockWidgetFloatable
         )
-        self.setMinimumWidth(360)
-        self.setMinimumHeight(360)
+        self.setMinimumSize(DOCK_MIN_WIDTH, DOCK_MIN_HEIGHT)
         self.resize(self._default_width, self._default_height)
         self.setFloating(bool(floating))
         self.setSizePolicy(
@@ -100,7 +113,7 @@ class ConfigDockWidget(QDockWidget):
             }}
 
             QDockWidget::title {{
-                padding: 8px 10px;
+                padding: 9px 12px;
                 font-weight: 600;
             }}
             """
@@ -138,7 +151,7 @@ def make_dock_scroll_area(content: QWidget) -> QScrollArea:
     scroll_area.setFrameShape(QScrollArea.Shape.NoFrame)
     scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
     scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-    scroll_area.setWidget(content)
+    scroll_area.setWidget(make_dock_content_widget(content))
     scroll_area.setSizePolicy(
         QSizePolicy.Policy.Expanding,
         QSizePolicy.Policy.Expanding,
@@ -148,16 +161,24 @@ def make_dock_scroll_area(content: QWidget) -> QScrollArea:
 
 def make_dock_content_widget(
     content: QWidget | None = None,
-    margins: tuple[int, int, int, int] = (18, 18, 18, 18),
-    spacing: int = 14,
+    margins: tuple[int, int, int, int] = DOCK_CONTENT_MARGINS,
+    spacing: int = DOCK_CONTENT_SPACING,
 ) -> QWidget:
     wrapper = QWidget()
+    wrapper.setObjectName("ConfigDockContentWrapper")
+    wrapper.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+
     layout = QVBoxLayout(wrapper)
     layout.setContentsMargins(*margins)
     layout.setSpacing(spacing)
 
     if content is not None:
-        layout.addWidget(content)
+        content.setMaximumWidth(DOCK_CONTENT_MAX_WIDTH)
+        content.setSizePolicy(
+            QSizePolicy.Policy.Preferred,
+            QSizePolicy.Policy.MinimumExpanding,
+        )
+        layout.addWidget(content, 1, Qt.AlignmentFlag.AlignHCenter)
 
     layout.addStretch(1)
     return wrapper
@@ -168,8 +189,8 @@ def create_config_dock(
     object_name: str,
     title: str,
     content: QWidget,
-    default_width: int = 520,
-    default_height: int = 620,
+    default_width: int = 620,
+    default_height: int = 640,
     font_size: int = 13,
     area: Qt.DockWidgetArea = Qt.DockWidgetArea.RightDockWidgetArea,
     floating: bool = False,
