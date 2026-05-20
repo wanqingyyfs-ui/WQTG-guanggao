@@ -37,10 +37,6 @@ class TemplateForm(QWidget):
         self.remark_edit.setPlaceholderText("备注")
         style_text_editor(self.remark_edit, 160)
 
-        self.info_edit = QPlainTextEdit()
-        self.info_edit.setReadOnly(True)
-        style_text_editor(self.info_edit, 180)
-
         self.save_button = QPushButton("保存")
 
         self._build_ui()
@@ -53,7 +49,6 @@ class TemplateForm(QWidget):
         form.addRow("模板名称：", self.template_name_edit)
         form.addRow("启用状态：", self.enabled_checkbox)
         form.addRow("备注：", self.remark_edit)
-        form.addRow("只读信息：", self.info_edit)
 
         button_layout = QHBoxLayout()
         button_layout.setSpacing(10)
@@ -74,14 +69,12 @@ class TemplateForm(QWidget):
         self.template_name_edit.setText(str(template.template_name or ""))
         self.enabled_checkbox.setChecked(bool(template.enabled))
         self.remark_edit.setPlainText(str(getattr(template, "remark", "") or ""))
-        self.info_edit.setPlainText(self._build_info_text(template))
 
     def clear_form(self) -> None:
         self._current_template = None
         self.template_name_edit.clear()
         self.enabled_checkbox.setChecked(True)
         self.remark_edit.clear()
-        self.info_edit.setPlainText("请先从模板列表选择一个模板。")
 
     def get_form_template(self) -> TemplateConfig:
         if self._current_template is None:
@@ -107,20 +100,4 @@ class TemplateForm(QWidget):
             enabled=self.enabled_checkbox.isChecked(),
             created_at=old.created_at,
             remark=self.remark_edit.toPlainText().strip(),
-        )
-
-    @staticmethod
-    def _build_info_text(template: TemplateConfig) -> str:
-        source_ids = ",".join(str(item) for item in template.source_message_ids)
-        return (
-            f"模板 ID：{template.template_id}\n"
-            f"来源账号：{template.source_account_name}\n"
-            f"来源 Chat ID：{template.source_chat_id}\n"
-            f"来源标题：{template.source_chat_title}\n"
-            f"来源消息 ID：{source_ids}\n"
-            f"消息类型：{template.message_type}\n"
-            f"发送模式：{template.send_mode}\n"
-            f"媒体数量：{template.media_count}\n"
-            f"创建时间：{template.created_at}\n\n"
-            "以上字段由素材监听生成，当前表单只允许修改模板名称、启用状态和备注。"
         )

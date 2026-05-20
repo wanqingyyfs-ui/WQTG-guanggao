@@ -34,7 +34,6 @@ class GroupPage(QWidget):
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         style_table(self.table)
 
-        self.add_button = QPushButton("新增群组")
         self.config_button = QPushButton("配置群组")
         self.delete_button = QPushButton("删除群组")
         self.up_button = QPushButton("上移")
@@ -51,7 +50,6 @@ class GroupPage(QWidget):
         button_layout = QHBoxLayout()
         button_layout.setContentsMargins(0, 0, 0, 0)
         button_layout.setSpacing(10)
-        button_layout.addWidget(self.add_button)
         button_layout.addWidget(self.config_button)
         button_layout.addWidget(self.delete_button)
         button_layout.addWidget(self.up_button)

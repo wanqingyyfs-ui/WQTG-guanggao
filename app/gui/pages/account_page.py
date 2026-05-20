@@ -35,7 +35,6 @@ class AccountPage(QWidget):
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         style_table(self.table)
 
-        self.add_button = QPushButton("新增账号")
         self.config_button = QPushButton("配置账号")
         self.delete_button = QPushButton("删除账号")
         self.up_button = QPushButton("上移")
@@ -55,7 +54,6 @@ class AccountPage(QWidget):
         button_layout = QHBoxLayout()
         button_layout.setContentsMargins(0, 0, 0, 0)
         button_layout.setSpacing(10)
-        button_layout.addWidget(self.add_button)
         button_layout.addWidget(self.config_button)
         button_layout.addWidget(self.delete_button)
         button_layout.addWidget(self.up_button)

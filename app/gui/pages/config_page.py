@@ -47,7 +47,7 @@ class ConfigPage(QWidget):
 
     最终规则：
     - 本页自动保存、自动从 runtime 重新加载，不提供手动保存/重新加载按钮。
-    - 群发运行中，发送相关配置禁用；UI 外观配置仍允许修改。
+    - 群发运行中，发送相关配置禁用；素材监听配置和 UI 外观配置仍允许修改。
     - 延迟和间隔在 UI 中按“秒”填写，支持 3 位小数，内部保存为毫秒。
     """
 
@@ -58,6 +58,7 @@ class ConfigPage(QWidget):
         self._loading = False
         self._last_error_text = ""
         self._send_related_widgets: list[QWidget] = []
+        self._runtime_safe_widgets: list[QWidget] = []
         self._ui_related_widgets: list[QWidget] = []
 
         self._save_timer = QTimer(self)
@@ -145,6 +146,10 @@ class ConfigPage(QWidget):
                 self.app_name_edit,
                 self.log_level_combo,
                 self.max_concurrent_tasks_spin,
+            ]
+        )
+        self._runtime_safe_widgets.extend(
+            [
                 self.template_source_account_name_edit,
                 self.template_source_chat_id_edit,
             ]
@@ -499,7 +504,11 @@ class ConfigPage(QWidget):
         self.template_panel_height_spin.setValue(int(settings.template_panel_height))
 
     def _connect_auto_save_signals(self) -> None:
-        for widget in self._send_related_widgets + self._ui_related_widgets:
+        for widget in (
+            self._send_related_widgets
+            + self._runtime_safe_widgets
+            + self._ui_related_widgets
+        ):
             if getattr(widget, "_config_page_signal_connected", False):
                 continue
 
@@ -540,18 +549,28 @@ class ConfigPage(QWidget):
                 )
                 return False
 
+            template_source_changed = self._template_source_changed(settings)
+
             self.runtime.save_settings(settings)
-            self._load_settings(settings)
+
+            self._loading = True
+            try:
+                self._load_settings(settings)
+            finally:
+                self._loading = False
+
             self._update_probability_status()
-            self._set_status("配置已自动保存")
             self._last_error_text = ""
 
-            if self._template_source_changed(settings):
-                self._set_status("配置已自动保存；素材监听配置变更后，账号可能需要重启后完全生效")
+            if template_source_changed:
+                self._set_status("素材监听配置已更新，正在运行的账号可能需要重启后才会完全生效")
+            else:
+                self._set_status("配置已自动保存")
 
             if show_message:
                 QMessageBox.information(self, "保存成功", "配置已保存")
 
+            self._update_running_state()
             return True
 
         except Exception as exc:
@@ -710,11 +729,14 @@ class ConfigPage(QWidget):
         for widget in self._send_related_widgets:
             widget.setEnabled(not running)
 
+        for widget in self._runtime_safe_widgets:
+            widget.setEnabled(True)
+
         for widget in self._ui_related_widgets:
             widget.setEnabled(True)
 
         if running:
-            self._set_status("群发运行中：发送相关配置已锁定，界面外观仍可调整")
+            self._set_status("群发运行中：发送相关配置已锁定，素材监听和界面外观仍可调整")
         elif self._last_error_text:
             self._set_error(self._last_error_text)
         else:

@@ -38,6 +38,7 @@ class SchedulerService:
     - 群组延迟、账号延迟都在动作后执行，并且包括最后一个动作。
     - 调度等待和延迟等待都能响应停止。
     - 并发执行中不通过长期修改共享 task 对象决定本次账号、群组、模板。
+    - 写入任务日志前先写入本次真实 group/account 实际延迟。
     """
 
     MIN_IDLE_SLEEP_SECONDS = 0.05
@@ -366,13 +367,15 @@ class SchedulerService:
                 group_delay_min_ms=group_delay_min_ms,
                 group_delay_max_ms=group_delay_max_ms,
             )
-            all_results.extend(account_results)
 
             account_delay_ms = self._random_delay_ms(
                 account_delay_min_ms,
                 account_delay_max_ms,
             )
             self._apply_actual_account_delay(account_results, account_delay_ms)
+            self._append_results_to_log(account_results)
+            all_results.extend(account_results)
+
             await self._sleep_after_account(task, account_name, account_delay_ms)
 
         success_count = 0
@@ -427,6 +430,9 @@ class SchedulerService:
                 f"轮询账号不存在，已跳过该账号全部群组 | task={task.task_name} | account={account_name}",
             )
             for group_position, group in enumerate(groups):
+                if self._stop_event.is_set():
+                    break
+
                 result = self._build_failed_result(
                     task=task,
                     group=group,
@@ -435,10 +441,9 @@ class SchedulerService:
                     group_index=self._source_group_index(task, group.group_id),
                     error=f"账号不存在: {account_name}",
                 )
-                self.task_log_service.append_result(result)
-                results.append(result)
                 group_delay_ms = self._random_delay_ms(group_delay_min_ms, group_delay_max_ms)
                 self._apply_actual_group_delay(result, group_delay_ms)
+                results.append(result)
                 await self._sleep_after_group(task, account_name, group, group_delay_ms, group_position, len(groups))
             return results
 
@@ -448,6 +453,9 @@ class SchedulerService:
                 f"轮询账号未启用，已跳过该账号全部群组 | task={task.task_name} | account={account.account_name}",
             )
             for group_position, group in enumerate(groups):
+                if self._stop_event.is_set():
+                    break
+
                 result = self._build_failed_result(
                     task=task,
                     group=group,
@@ -456,10 +464,9 @@ class SchedulerService:
                     group_index=self._source_group_index(task, group.group_id),
                     error=f"账号未启用: {account.account_name}",
                 )
-                self.task_log_service.append_result(result)
-                results.append(result)
                 group_delay_ms = self._random_delay_ms(group_delay_min_ms, group_delay_max_ms)
                 self._apply_actual_group_delay(result, group_delay_ms)
+                results.append(result)
                 await self._sleep_after_group(task, account.account_name, group, group_delay_ms, group_position, len(groups))
             return results
 
@@ -472,6 +479,9 @@ class SchedulerService:
                 f"account={account.account_name} | error={exc}",
             )
             for group_position, group in enumerate(groups):
+                if self._stop_event.is_set():
+                    break
+
                 result = self._build_failed_result(
                     task=task,
                     group=group,
@@ -480,10 +490,9 @@ class SchedulerService:
                     group_index=self._source_group_index(task, group.group_id),
                     error=f"账号启动失败: {exc}",
                 )
-                self.task_log_service.append_result(result)
-                results.append(result)
                 group_delay_ms = self._random_delay_ms(group_delay_min_ms, group_delay_max_ms)
                 self._apply_actual_group_delay(result, group_delay_ms)
+                results.append(result)
                 await self._sleep_after_group(task, account.account_name, group, group_delay_ms, group_position, len(groups))
             return results
 
@@ -530,11 +539,10 @@ class SchedulerService:
                     f"group={group.group_name} | error={exc}",
                 )
 
-            self.task_log_service.append_result(result)
-            results.append(result)
-
             group_delay_ms = self._random_delay_ms(group_delay_min_ms, group_delay_max_ms)
             self._apply_actual_group_delay(result, group_delay_ms)
+            results.append(result)
+
             await self._sleep_after_group(
                 task=task,
                 account_name=account.account_name,
@@ -545,6 +553,10 @@ class SchedulerService:
             )
 
         return results
+
+    def _append_results_to_log(self, results: list[SendResult]) -> None:
+        for result in results:
+            self.task_log_service.append_result(result)
 
     def _build_task_snapshot(
         self,

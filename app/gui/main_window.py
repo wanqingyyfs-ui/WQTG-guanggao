@@ -3,7 +3,6 @@ from __future__ import annotations
 import concurrent.futures
 import sys
 from pathlib import Path
-from typing import Any
 
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QIcon
@@ -165,7 +164,6 @@ class MainWindow(QMainWindow):
         self.dashboard_page.start_scheduler_button.clicked.connect(self.on_start_scheduler_clicked)
         self.dashboard_page.stop_scheduler_button.clicked.connect(self.on_stop_scheduler_clicked)
 
-        self.account_page.add_button.clicked.connect(self.on_open_account_add)
         self.account_page.config_button.clicked.connect(self.on_open_account_config)
         self.account_page.delete_button.clicked.connect(self.on_delete_account_clicked)
         self.account_page.up_button.clicked.connect(self.on_account_up_clicked)
@@ -174,13 +172,11 @@ class MainWindow(QMainWindow):
         self.account_page.start_button.clicked.connect(self.on_start_account_clicked)
         self.account_page.stop_button.clicked.connect(self.on_stop_account_clicked)
 
-        self.group_page.add_button.clicked.connect(self.on_open_group_add)
         self.group_page.config_button.clicked.connect(self.on_open_group_config)
         self.group_page.delete_button.clicked.connect(self.on_delete_group_clicked)
         self.group_page.up_button.clicked.connect(self.on_group_up_clicked)
         self.group_page.down_button.clicked.connect(self.on_group_down_clicked)
 
-        self.task_page.add_button.clicked.connect(self.on_open_task_add)
         self.task_page.config_button.clicked.connect(self.on_open_task_config)
         self.task_page.delete_button.clicked.connect(self.on_delete_task_clicked)
         self.task_page.up_button.clicked.connect(self.on_task_up_clicked)
@@ -511,6 +507,80 @@ class MainWindow(QMainWindow):
             result.insert(0, legacy)
         return result
 
+    def _reorder_task_account_names_by_account_order(self) -> bool:
+        order = [
+            str(account.account_name or "").strip()
+            for account in self.accounts
+            if str(account.account_name or "").strip()
+        ]
+        changed = False
+
+        for task in self.tasks:
+            old_names = self._task_account_names(task)
+            new_names = self._sort_values_by_order(old_names, order)
+
+            if new_names != old_names:
+                task.account_names = new_names
+                task.account_name = new_names[0] if new_names else ""
+                task.current_account_index = 0
+                changed = True
+
+        return changed
+
+    def _reorder_task_group_ids_by_group_order(self) -> bool:
+        order = [
+            str(group.group_id or "").strip()
+            for group in self.groups
+            if str(group.group_id or "").strip()
+        ]
+        changed = False
+
+        for task in self.tasks:
+            old_group_ids = self._task_group_ids(task)
+            new_group_ids = self._sort_values_by_order(old_group_ids, order)
+
+            if new_group_ids != old_group_ids:
+                task.group_ids = new_group_ids
+                task.group_id = new_group_ids[0] if new_group_ids else ""
+                task.current_group_index = 0
+                changed = True
+
+        return changed
+
+    def _reorder_task_template_ids_by_template_order(self) -> bool:
+        order = [
+            str(template.template_id or "").strip()
+            for template in self.templates
+            if str(template.template_id or "").strip()
+        ]
+        changed = False
+
+        for task in self.tasks:
+            old_template_ids = self._task_template_ids(task)
+            new_template_ids = self._sort_values_by_order(old_template_ids, order)
+
+            if new_template_ids != old_template_ids:
+                task.template_ids = new_template_ids
+                task.template_id = new_template_ids[0] if new_template_ids else ""
+                changed = True
+
+        return changed
+
+    @staticmethod
+    def _sort_values_by_order(values: list[str], order: list[str]) -> list[str]:
+        ordered_values: list[str] = []
+        value_set = set(values)
+
+        for value in order:
+            if value in value_set and value not in ordered_values:
+                ordered_values.append(value)
+
+        for value in values:
+            if value and value not in ordered_values:
+                ordered_values.append(value)
+
+        return ordered_values
+
     def _validate_task_accounts(self, task) -> None:
         account_names = self._task_account_names(task)
         if not account_names:
@@ -745,39 +815,59 @@ class MainWindow(QMainWindow):
             self._show_error(f"删除账号失败：{exc}")
 
     def on_account_up_clicked(self) -> None:
-        self._move_item(self.accounts, self.account_page, -1, self.runtime_service.save_accounts, "移动账号失败")
+        self._move_account_and_sync_tasks(-1)
 
     def on_account_down_clicked(self) -> None:
-        self._move_item(self.accounts, self.account_page, 1, self.runtime_service.save_accounts, "移动账号失败")
+        self._move_account_and_sync_tasks(1)
 
     def on_login_account_clicked(self) -> None:
-        account_name = self.account_page.get_selected_account_name()
-        if not account_name:
-            self._show_error("请先选择一个账号")
-            return
+        try:
+            self._ensure_can_modify_sending_data()
 
-        account = next((item for item in self.accounts if item.account_name == account_name), None)
-        if account is None:
-            self._show_error("账号不存在")
-            return
+            account_name = self.account_page.get_selected_account_name()
+            if not account_name:
+                self._show_error("请先选择一个账号")
+                return
 
-        confirm = LoginConfirmDialog(account.account_name, account.phone, self)
-        if confirm.exec():
-            self.runtime_service.login_account(account_name)
+            account = next((item for item in self.accounts if item.account_name == account_name), None)
+            if account is None:
+                self._show_error("账号不存在")
+                return
+
+            confirm = LoginConfirmDialog(account.account_name, account.phone, self)
+            if confirm.exec():
+                self.runtime_service.login_account(account_name)
+
+        except Exception as exc:
+            self._show_error(str(exc))
 
     def on_start_account_clicked(self) -> None:
-        account_name = self.account_page.get_selected_account_name()
-        if not account_name:
-            self._show_error("请先选择一个账号")
-            return
-        self.runtime_service.start_account(account_name)
+        try:
+            self._ensure_can_modify_sending_data()
+
+            account_name = self.account_page.get_selected_account_name()
+            if not account_name:
+                self._show_error("请先选择一个账号")
+                return
+
+            self.runtime_service.start_account(account_name)
+
+        except Exception as exc:
+            self._show_error(str(exc))
 
     def on_stop_account_clicked(self) -> None:
-        account_name = self.account_page.get_selected_account_name()
-        if not account_name:
-            self._show_error("请先选择一个账号")
-            return
-        self.runtime_service.stop_account(account_name)
+        try:
+            self._ensure_can_modify_sending_data()
+
+            account_name = self.account_page.get_selected_account_name()
+            if not account_name:
+                self._show_error("请先选择一个账号")
+                return
+
+            self.runtime_service.stop_account(account_name)
+
+        except Exception as exc:
+            self._show_error(str(exc))
 
     def on_save_group_clicked(self) -> None:
         try:
@@ -828,10 +918,10 @@ class MainWindow(QMainWindow):
             self._show_error(f"删除群组失败：{exc}")
 
     def on_group_up_clicked(self) -> None:
-        self._move_item(self.groups, self.group_page, -1, self.runtime_service.save_groups, "移动群组失败")
+        self._move_group_and_sync_tasks(-1)
 
     def on_group_down_clicked(self) -> None:
-        self._move_item(self.groups, self.group_page, 1, self.runtime_service.save_groups, "移动群组失败")
+        self._move_group_and_sync_tasks(1)
 
     def on_save_task_clicked(self) -> None:
         try:
@@ -929,27 +1019,93 @@ class MainWindow(QMainWindow):
             self._show_error(f"删除模板失败：{exc}")
 
     def on_template_up_clicked(self) -> None:
-        self._move_item(self.templates, self.template_page, -1, self.runtime_service.save_templates, "移动模板失败")
+        self._move_template_and_sync_tasks(-1)
 
     def on_template_down_clicked(self) -> None:
-        self._move_item(self.templates, self.template_page, 1, self.runtime_service.save_templates, "移动模板失败")
+        self._move_template_and_sync_tasks(1)
+
+    def _move_account_and_sync_tasks(self, direction: int) -> None:
+        try:
+            self._ensure_can_modify_sending_data()
+            target_row = self._swap_selected_item(self.accounts, self.account_page, direction)
+            if target_row < 0:
+                return
+
+            self.runtime_service.save_accounts(self.accounts)
+            tasks_changed = self._reorder_task_account_names_by_account_order()
+            if tasks_changed:
+                self.runtime_service.save_tasks(self.tasks)
+
+            self._sync_state_from_runtime()
+            self.refresh_all_views()
+            self.account_page.select_row(target_row)
+
+        except Exception as exc:
+            self._show_error(f"移动账号失败：{exc}")
+
+    def _move_group_and_sync_tasks(self, direction: int) -> None:
+        try:
+            self._ensure_can_modify_sending_data()
+            target_row = self._swap_selected_item(self.groups, self.group_page, direction)
+            if target_row < 0:
+                return
+
+            self.runtime_service.save_groups(self.groups)
+            tasks_changed = self._reorder_task_group_ids_by_group_order()
+            if tasks_changed:
+                self.runtime_service.save_tasks(self.tasks)
+
+            self._sync_state_from_runtime()
+            self.refresh_all_views()
+            self.group_page.select_row(target_row)
+
+        except Exception as exc:
+            self._show_error(f"移动群组失败：{exc}")
+
+    def _move_template_and_sync_tasks(self, direction: int) -> None:
+        try:
+            self._ensure_can_modify_sending_data()
+            target_row = self._swap_selected_item(self.templates, self.template_page, direction)
+            if target_row < 0:
+                return
+
+            self.runtime_service.save_templates(self.templates)
+            tasks_changed = self._reorder_task_template_ids_by_template_order()
+            if tasks_changed:
+                self.runtime_service.save_tasks(self.tasks)
+
+            self._sync_state_from_runtime()
+            self.refresh_all_views()
+            self.template_page.select_row(target_row)
+
+        except Exception as exc:
+            self._show_error(f"移动模板失败：{exc}")
 
     def _move_item(self, items: list, page, direction: int, save_func, error_title: str) -> None:
         try:
             self._ensure_can_modify_sending_data()
-            row = page.get_selected_row()
-            target_row = row + direction
-
-            if row < 0 or target_row < 0 or target_row >= len(items):
+            target_row = self._swap_selected_item(items, page, direction)
+            if target_row < 0:
                 return
 
-            items[row], items[target_row] = items[target_row], items[row]
             save_func(items)
             self._sync_state_from_runtime()
             self.refresh_all_views()
             page.select_row(target_row)
+
         except Exception as exc:
             self._show_error(f"{error_title}：{exc}")
+
+    @staticmethod
+    def _swap_selected_item(items: list, page, direction: int) -> int:
+        row = page.get_selected_row()
+        target_row = row + direction
+
+        if row < 0 or target_row < 0 or target_row >= len(items):
+            return -1
+
+        items[row], items[target_row] = items[target_row], items[row]
+        return target_row
 
     def closeEvent(self, event) -> None:
         try:

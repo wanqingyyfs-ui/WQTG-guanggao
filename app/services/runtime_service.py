@@ -349,7 +349,7 @@ class RuntimeService(QObject):
 
         if template_listening_changed:
             self.runtime_hint.emit(
-                "模板监听配置已更新，正在运行的账号可能需要重启后才会完全生效"
+                "素材监听配置已更新，正在运行的账号可能需要重启后才会完全生效"
             )
 
     def save_noise_pool(self, noise_pool: list[str]) -> None:
