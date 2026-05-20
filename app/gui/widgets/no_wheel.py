@@ -6,7 +6,9 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDateEdit,
     QDateTimeEdit,
+    QDial,
     QDoubleSpinBox,
+    QSlider,
     QSpinBox,
     QTimeEdit,
 )
@@ -57,6 +59,18 @@ class NoWheelDateEdit(NoWheelMixin, QDateEdit):
 
 
 class NoWheelDateTimeEdit(NoWheelMixin, QDateTimeEdit):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+
+
+class NoWheelSlider(NoWheelMixin, QSlider):
+    def __init__(self, orientation=Qt.Orientation.Horizontal, parent=None):
+        super().__init__(orientation, parent)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+
+
+class NoWheelDial(NoWheelMixin, QDial):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)

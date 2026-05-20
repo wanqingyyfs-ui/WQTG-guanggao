@@ -21,6 +21,46 @@ from app.services.template_service import TemplateSender
 from app.services.template_store_service import TemplateStoreService
 
 
+SCHEDULER_STOP_MESSAGE = "请先停止群发功能"
+
+UI_APPEARANCE_SETTING_FIELDS = {
+    "global_font_size",
+    "table_font_size",
+    "button_font_size",
+    "input_font_size",
+    "floating_panel_font_size",
+    "account_panel_font_size",
+    "account_panel_width",
+    "account_panel_height",
+    "group_panel_font_size",
+    "group_panel_width",
+    "group_panel_height",
+    "task_panel_font_size",
+    "task_panel_width",
+    "task_panel_height",
+    "template_panel_font_size",
+    "template_panel_width",
+    "template_panel_height",
+}
+
+TEMPLATE_LISTENING_SETTING_FIELDS = {
+    "template_source_account_name",
+    "template_source_chat_id",
+}
+
+RUNTIME_SAFE_SETTING_FIELDS = (
+    UI_APPEARANCE_SETTING_FIELDS
+    | TEMPLATE_LISTENING_SETTING_FIELDS
+    | {
+        "app_name",
+        "log_level",
+        "log_file",
+        "sessions_dir",
+        "config_auto_save_debounce_ms",
+    }
+)
+
+
 class GuiLoginInputProvider(QObject):
     code_input_required = Signal(str, str, object)
     password_input_required = Signal(str, object)
@@ -185,7 +225,7 @@ class RuntimeService(QObject):
 
     def ensure_can_modify_sending_data(self) -> None:
         if self.is_scheduler_running():
-            raise RuntimeError("群发运行中，不能修改会影响发送的数据，请先停止群发调度器")
+            raise RuntimeError(SCHEDULER_STOP_MESSAGE)
 
     def get_logs_dir(self) -> Path:
         return self.config_service.logs_dir
@@ -288,7 +328,17 @@ class RuntimeService(QObject):
         self._update_runtime_components()
 
     def save_settings(self, settings) -> None:
-        self.ensure_can_modify_sending_data()
+        changed_fields = self._changed_settings_fields(self.settings, settings)
+
+        if self.is_scheduler_running() and self._settings_change_requires_stop(
+            changed_fields
+        ):
+            raise RuntimeError(SCHEDULER_STOP_MESSAGE)
+
+        template_listening_changed = bool(
+            changed_fields & TEMPLATE_LISTENING_SETTING_FIELDS
+        )
+
         self.settings = settings
         self._apply_runtime_paths()
         self.config_service.save_settings(self.settings)
@@ -297,6 +347,11 @@ class RuntimeService(QObject):
         self.template_collector.settings = self.settings
         self._update_runtime_components()
 
+        if template_listening_changed:
+            self.runtime_hint.emit(
+                "模板监听配置已更新，正在运行的账号可能需要重启后才会完全生效"
+            )
+
     def save_noise_pool(self, noise_pool: list[str]) -> None:
         self.ensure_can_modify_sending_data()
         self.noise_pool = list(noise_pool)
@@ -304,6 +359,39 @@ class RuntimeService(QObject):
         self.noise_pool = self.noise_pool_service.get_all()
         self.noise_pool_changed.emit()
         self._update_runtime_components()
+
+    def _settings_to_dict(self, settings) -> dict[str, Any]:
+        if settings is None:
+            return {}
+
+        if hasattr(settings, "to_dict") and callable(settings.to_dict):
+            return dict(settings.to_dict())
+
+        if isinstance(settings, dict):
+            return dict(settings)
+
+        if hasattr(settings, "__dict__"):
+            return dict(settings.__dict__)
+
+        return {}
+
+    def _changed_settings_fields(self, old_settings, new_settings) -> set[str]:
+        old_data = self._settings_to_dict(old_settings)
+        new_data = self._settings_to_dict(new_settings)
+        keys = set(old_data.keys()) | set(new_data.keys())
+
+        return {
+            key
+            for key in keys
+            if old_data.get(key) != new_data.get(key)
+        }
+
+    @staticmethod
+    def _settings_change_requires_stop(changed_fields: set[str]) -> bool:
+        if not changed_fields:
+            return False
+
+        return bool(set(changed_fields) - RUNTIME_SAFE_SETTING_FIELDS)
 
     def _update_runtime_components(self) -> None:
         if self._manager is not None:

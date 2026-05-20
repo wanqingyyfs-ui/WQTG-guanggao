@@ -11,6 +11,50 @@ from app.services.group_send_service import SendResult
 
 
 class TaskLogService:
+    REQUIRED_LOG_DEFAULTS: dict[str, Any] = {
+        "task_id": "",
+        "task_name": "",
+        "account_name": "",
+        "group_id": "",
+        "chat_id": 0,
+        "status": "unknown",
+        "error": "",
+        "started_at": "",
+        "finished_at": "",
+        "decision": "",
+        "message_mode": "",
+        "selected_template_id": "",
+        "template_id": "",
+        "template_ids": [],
+        "configured_template_ids": [],
+        "enabled_template_ids": [],
+        "noise_text_preview": "",
+        "skip_reason": "",
+        "ad_probability": 0,
+        "noise_probability": 0,
+        "skip_probability": 0,
+        "rotate_mode": "",
+        "account_index": 0,
+        "selected_account_name": "",
+        "account_pool": [],
+        "account_pool_size": 0,
+        "group_rotate_mode": "",
+        "group_index": 0,
+        "selected_group_id": "",
+        "selected_group_name": "",
+        "group_pool": [],
+        "group_pool_size": 0,
+        "account_delay_min_ms": 0,
+        "account_delay_max_ms": 0,
+        "group_delay_min_ms": 0,
+        "group_delay_max_ms": 0,
+        "actual_account_delay_ms": 0,
+        "actual_group_delay_ms": 0,
+        "account_delay_seconds": 0,
+        "group_delay_seconds": 0,
+        "flood_wait_seconds": 0,
+    }
+
     def __init__(self, log_file: str | Path, log_func=None):
         self.log_file = Path(log_file).expanduser()
         self.log_func = log_func
@@ -22,7 +66,7 @@ class TaskLogService:
 
     @staticmethod
     def _now_text() -> str:
-        return datetime.now().isoformat(timespec="seconds")
+        return datetime.now().isoformat(timespec="milliseconds")
 
     def append_result(self, result: SendResult | None) -> None:
         if result is None:
@@ -49,9 +93,13 @@ class TaskLogService:
     def append_record(self, record: Mapping[str, Any] | dict[str, Any]) -> None:
         try:
             safe_record = self._sanitize_record(record)
+            safe_record = self._ensure_required_fields(safe_record)
 
             if "logged_at" not in safe_record:
                 safe_record["logged_at"] = self._now_text()
+
+            if "log_schema_version" not in safe_record:
+                safe_record["log_schema_version"] = 2
 
             line = json.dumps(
                 safe_record,
@@ -89,23 +137,31 @@ class TaskLogService:
                     record = json.loads(text)
                 except json.JSONDecodeError:
                     records.append(
-                        {
-                            "status": "invalid",
-                            "error": "日志行不是有效 JSON",
-                            "raw_line": text[:500],
-                        }
+                        self._ensure_required_fields(
+                            {
+                                "status": "invalid",
+                                "error": "日志行不是有效 JSON",
+                                "raw_line": text[:500],
+                            }
+                        )
                     )
                     continue
 
                 if isinstance(record, dict):
-                    records.append(self._sanitize_record(record))
+                    records.append(
+                        self._ensure_required_fields(self._sanitize_record(record))
+                    )
                 else:
                     records.append(
-                        {
-                            "status": "invalid",
-                            "error": f"日志记录不是对象: {type(record).__name__}",
-                            "raw_record": str(record)[:500],
-                        }
+                        self._ensure_required_fields(
+                            {
+                                "status": "invalid",
+                                "error": (
+                                    f"日志记录不是对象: {type(record).__name__}"
+                                ),
+                                "raw_record": str(record)[:500],
+                            }
+                        )
                     )
 
             return records
@@ -188,6 +244,38 @@ class TaskLogService:
 
         if is_dataclass(value):
             return self._sanitize_value(asdict(value))
+
+        return value
+
+    def _ensure_required_fields(self, record: dict[str, Any]) -> dict[str, Any]:
+        safe_record = dict(record)
+
+        for key, default_value in self.REQUIRED_LOG_DEFAULTS.items():
+            if key not in safe_record:
+                safe_record[key] = self._copy_default(default_value)
+
+        if safe_record.get("selected_template_id") and not safe_record.get("template_id"):
+            safe_record["template_id"] = safe_record["selected_template_id"]
+
+        if safe_record.get("template_id") and not safe_record.get("selected_template_id"):
+            safe_record["selected_template_id"] = safe_record["template_id"]
+
+        if safe_record.get("error") and not safe_record.get("skip_reason"):
+            if str(safe_record.get("status") or "").strip() == "skipped":
+                safe_record["skip_reason"] = str(safe_record.get("error") or "")
+
+        return safe_record
+
+    @staticmethod
+    def _copy_default(value: Any) -> Any:
+        if isinstance(value, list):
+            return list(value)
+
+        if isinstance(value, dict):
+            return dict(value)
+
+        if isinstance(value, set):
+            return set(value)
 
         return value
 
