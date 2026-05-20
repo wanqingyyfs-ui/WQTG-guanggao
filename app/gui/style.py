@@ -367,8 +367,6 @@ QSplitter::handle {{
 QDockWidget {{
     background: #ffffff;
     border: 1px solid #d9dee7;
-    titlebar-close-icon: none;
-    titlebar-normal-icon: none;
     font-size: {floating_panel_font_size}px;
 }}
 

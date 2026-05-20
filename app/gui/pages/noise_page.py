@@ -235,9 +235,22 @@ class NoisePage(QWidget):
         if row < 0 or row >= len(self.noise_pool):
             return
 
-        self.noise_pool[row] = self.editor.toPlainText()
+        text = self.editor.toPlainText()
+        self.noise_pool[row] = text
+        self._update_list_item_preview(row)
         self._mark_dirty()
-        self._refresh_list(current_row=row)
+
+    def _update_list_item_preview(self, row: int) -> None:
+        if row < 0 or row >= len(self.noise_pool):
+            return
+
+        item = self.noise_list.item(row)
+        if item is None:
+            return
+
+        text = self.noise_pool[row]
+        item.setText(f"{row + 1}. {self._preview_text(text)}")
+        item.setData(Qt.ItemDataRole.UserRole, text)
 
     def add_item(self) -> None:
         if not self._can_edit_with_message():
