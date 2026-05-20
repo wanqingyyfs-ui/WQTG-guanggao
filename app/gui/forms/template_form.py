@@ -72,7 +72,7 @@ class TemplateForm(QWidget):
 
         button_layout = QHBoxLayout()
         button_layout.setContentsMargins(0, 10, 0, 0)
-        button_layout.setSpacing(14)
+        button_layout.setSpacing(24)
         button_layout.addStretch(1)
         button_layout.addWidget(self.save_button)
         button_layout.addStretch(1)
@@ -89,8 +89,8 @@ class TemplateForm(QWidget):
 
     @staticmethod
     def _style_action_button(button: QPushButton) -> None:
-        button.setMinimumWidth(120)
-        button.setMinimumHeight(38)
+        button.setMinimumWidth(140)
+        button.setMinimumHeight(42)
 
     @staticmethod
     def _add_labeled_widget(

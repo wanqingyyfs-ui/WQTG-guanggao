@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QEvent, Qt, Signal
 from PySide6.QtGui import QStandardItem, QStandardItemModel
+from PySide6.QtWidgets import QListView
 
 from app.gui.widgets.no_wheel import NoWheelComboBox
 
@@ -12,10 +13,10 @@ class CheckComboBox(NoWheelComboBox):
     """
     基于 Qt Model/View 的可勾选多选下拉框。
 
-    用途：
-    - 替代常驻 QListWidget，减少 Dock 表单占用高度。
-    - 点击下拉后勾选多项，关闭下拉后在输入框中显示摘要。
-    - 使用 QStandardItemModel 保存 UserRole 数据，便于表单读写真实 ID。
+    修复点：
+    - 点击输入框区域也会弹出下拉，不只依赖右侧箭头。
+    - 点击选项时只切换勾选状态，不立即关闭下拉。
+    - 下拉视图给足宽度和高度，避免用户看不到可选项。
     """
 
     checked_items_changed = Signal()
@@ -24,10 +25,17 @@ class CheckComboBox(NoWheelComboBox):
         super().__init__(parent)
 
         self._model = QStandardItemModel(self)
+        self._popup_should_stay_open = False
+
         self.setModel(self._model)
+        self.setView(QListView(self))
         self.setEditable(True)
+        self.setMaxVisibleItems(16)
+        self.setMinimumWidth(180)
         self.lineEdit().setReadOnly(True)
         self.lineEdit().setPlaceholderText("请选择")
+        self.lineEdit().installEventFilter(self)
+        self.view().viewport().installEventFilter(self)
         self.view().pressed.connect(self._on_item_pressed)
 
     def clear_items(self) -> None:
@@ -97,6 +105,28 @@ class CheckComboBox(NoWheelComboBox):
     def selected_count(self) -> int:
         return len(self.checked_data())
 
+    def showPopup(self) -> None:  # noqa: N802
+        popup_width = max(self.width(), 360)
+        self.view().setMinimumWidth(popup_width)
+        self.view().setMinimumHeight(min(360, max(160, self._model.rowCount() * 32)))
+        super().showPopup()
+
+    def hidePopup(self) -> None:  # noqa: N802
+        if self._popup_should_stay_open:
+            self._popup_should_stay_open = False
+            return
+        super().hidePopup()
+
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802
+        if watched is self.lineEdit() and event.type() == QEvent.Type.MouseButtonRelease:
+            self.showPopup()
+            return True
+
+        if watched is self.view().viewport() and event.type() == QEvent.Type.MouseButtonRelease:
+            return True
+
+        return super().eventFilter(watched, event)
+
     def _on_item_pressed(self, index) -> None:
         item = self._model.itemFromIndex(index)
         if item is None:
@@ -105,6 +135,7 @@ class CheckComboBox(NoWheelComboBox):
         if not item.isEnabled():
             return
 
+        self._popup_should_stay_open = True
         item.setCheckState(
             Qt.CheckState.Unchecked
             if item.checkState() == Qt.CheckState.Checked

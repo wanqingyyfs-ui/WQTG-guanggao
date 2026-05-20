@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 from PySide6.QtCore import Qt, Signal
@@ -12,9 +13,31 @@ from PySide6.QtWidgets import (
 )
 
 
-DOCK_MIN_WIDTH = 620
-DOCK_MIN_HEIGHT = 520
-DOCK_CONTENT_MAX_WIDTH = 920
+@dataclass(frozen=True)
+class DockPanelSize:
+    min_width: int
+    min_height: int
+    default_width: int
+    default_height: int
+    content_max_width: int
+
+
+DEFAULT_PANEL_SIZE = DockPanelSize(
+    min_width=720,
+    min_height=560,
+    default_width=720,
+    default_height=600,
+    content_max_width=680,
+)
+
+TASK_PANEL_SIZE = DockPanelSize(
+    min_width=1080,
+    min_height=780,
+    default_width=1080,
+    default_height=820,
+    content_max_width=1020,
+)
+
 DOCK_CONTENT_MARGINS = (34, 34, 34, 30)
 DOCK_CONTENT_SPACING = 18
 
@@ -24,11 +47,11 @@ class ConfigDockWidget(QDockWidget):
     通用配置浮动面板。
 
     设计目标：
-    - 使用 Qt 官方推荐的 QDockWidget 方式，不再用固定比例的页面内表单。
-    - 支持停靠、浮动、关闭、调整大小。
-    - 关闭后不销毁内容，后续点击“配置”按钮可以再次打开。
-    - 内容区默认使用 QScrollArea，避免表单较长时撑破窗口。
-    - 面板保留统一外边距、合理最小尺寸，并让表单内容在面板中更居中。
+    - 使用 Qt 官方推荐的 QDockWidget。
+    - 默认点击配置后自动以浮动窗口弹出，不需要用户手动拖出。
+    - 支持关闭、移动、重新停靠、调整大小。
+    - 任务配置面板使用更大的默认比例，避免控件被挤压。
+    - 内容区使用 QScrollArea，但优先给足宽度，避免不必要的横向滚动。
     """
 
     closed = Signal(str)
@@ -39,10 +62,10 @@ class ConfigDockWidget(QDockWidget):
         title: str,
         content: QWidget | None = None,
         parent: QWidget | None = None,
-        default_width: int = 620,
-        default_height: int = 640,
+        default_width: int = 720,
+        default_height: int = 600,
         font_size: int = 13,
-        floating: bool = False,
+        floating: bool = True,
         allowed_areas: Qt.DockWidgetArea = (
             Qt.DockWidgetArea.LeftDockWidgetArea
             | Qt.DockWidgetArea.RightDockWidgetArea
@@ -51,13 +74,10 @@ class ConfigDockWidget(QDockWidget):
         super().__init__(title, parent)
 
         self._object_name = str(object_name or "").strip() or "configDockWidget"
-        self._default_width = max(
-            self._safe_positive_int(default_width, 620),
-            DOCK_MIN_WIDTH,
-        )
-        self._default_height = max(
-            self._safe_positive_int(default_height, 640),
-            DOCK_MIN_HEIGHT,
+        self._panel_size = self._resolve_panel_size(
+            object_name=self._object_name,
+            default_width=default_width,
+            default_height=default_height,
         )
         self._font_size = self._safe_font_size(font_size, 13)
         self._content: QWidget | None = None
@@ -69,8 +89,8 @@ class ConfigDockWidget(QDockWidget):
             | QDockWidget.DockWidgetFeature.DockWidgetMovable
             | QDockWidget.DockWidgetFeature.DockWidgetFloatable
         )
-        self.setMinimumSize(DOCK_MIN_WIDTH, DOCK_MIN_HEIGHT)
-        self.resize(self._default_width, self._default_height)
+        self.setMinimumSize(self._panel_size.min_width, self._panel_size.min_height)
+        self.resize(self._panel_size.default_width, self._panel_size.default_height)
         self.setFloating(bool(floating))
         self.setSizePolicy(
             QSizePolicy.Policy.Preferred,
@@ -80,6 +100,26 @@ class ConfigDockWidget(QDockWidget):
 
         if content is not None:
             self.set_content(content)
+
+    @classmethod
+    def _resolve_panel_size(
+        cls,
+        object_name: str,
+        default_width: int,
+        default_height: int,
+    ) -> DockPanelSize:
+        base = TASK_PANEL_SIZE if "task" in str(object_name or "").lower() else DEFAULT_PANEL_SIZE
+
+        safe_default_width = cls._safe_positive_int(default_width, base.default_width)
+        safe_default_height = cls._safe_positive_int(default_height, base.default_height)
+
+        return DockPanelSize(
+            min_width=base.min_width,
+            min_height=base.min_height,
+            default_width=max(safe_default_width, base.default_width, base.min_width),
+            default_height=max(safe_default_height, base.default_height, base.min_height),
+            content_max_width=base.content_max_width,
+        )
 
     @staticmethod
     def _safe_positive_int(value: Any, default: int) -> int:
@@ -123,7 +163,7 @@ class ConfigDockWidget(QDockWidget):
         self._content = content
 
         if scrollable:
-            self.setWidget(make_dock_scroll_area(content))
+            self.setWidget(make_dock_scroll_area(content, self._panel_size.content_max_width))
         else:
             self.setWidget(content)
 
@@ -135,23 +175,40 @@ class ConfigDockWidget(QDockWidget):
         self._apply_font_style()
 
     def open_panel(self) -> None:
+        self.setFloating(True)
+        self.setMinimumSize(self._panel_size.min_width, self._panel_size.min_height)
+        self.resize(self._panel_size.default_width, self._panel_size.default_height)
         self.show()
+        self._center_over_parent()
         self.raise_()
         self.activateWindow()
+
+    def _center_over_parent(self) -> None:
+        parent = self.parentWidget()
+        if parent is None:
+            return
+
+        try:
+            parent_center = parent.frameGeometry().center()
+            own_geometry = self.frameGeometry()
+            own_geometry.moveCenter(parent_center)
+            self.move(own_geometry.topLeft())
+        except Exception:
+            return
 
     def closeEvent(self, event) -> None:  # noqa: N802
         self.closed.emit(self.objectName())
         super().closeEvent(event)
 
 
-def make_dock_scroll_area(content: QWidget) -> QScrollArea:
+def make_dock_scroll_area(content: QWidget, content_max_width: int) -> QScrollArea:
     scroll_area = QScrollArea()
     scroll_area.setObjectName("ConfigDockScrollArea")
     scroll_area.setWidgetResizable(True)
     scroll_area.setFrameShape(QScrollArea.Shape.NoFrame)
     scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
     scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-    scroll_area.setWidget(make_dock_content_widget(content))
+    scroll_area.setWidget(make_dock_content_widget(content, content_max_width))
     scroll_area.setSizePolicy(
         QSizePolicy.Policy.Expanding,
         QSizePolicy.Policy.Expanding,
@@ -161,6 +218,7 @@ def make_dock_scroll_area(content: QWidget) -> QScrollArea:
 
 def make_dock_content_widget(
     content: QWidget | None = None,
+    content_max_width: int = DEFAULT_PANEL_SIZE.content_max_width,
     margins: tuple[int, int, int, int] = DOCK_CONTENT_MARGINS,
     spacing: int = DOCK_CONTENT_SPACING,
 ) -> QWidget:
@@ -173,7 +231,7 @@ def make_dock_content_widget(
     layout.setSpacing(spacing)
 
     if content is not None:
-        content.setMaximumWidth(DOCK_CONTENT_MAX_WIDTH)
+        content.setMaximumWidth(max(400, int(content_max_width)))
         content.setSizePolicy(
             QSizePolicy.Policy.Preferred,
             QSizePolicy.Policy.MinimumExpanding,
@@ -189,11 +247,11 @@ def create_config_dock(
     object_name: str,
     title: str,
     content: QWidget,
-    default_width: int = 620,
-    default_height: int = 640,
+    default_width: int = 720,
+    default_height: int = 600,
     font_size: int = 13,
     area: Qt.DockWidgetArea = Qt.DockWidgetArea.RightDockWidgetArea,
-    floating: bool = False,
+    floating: bool = True,
 ) -> ConfigDockWidget:
     dock = ConfigDockWidget(
         object_name=object_name,

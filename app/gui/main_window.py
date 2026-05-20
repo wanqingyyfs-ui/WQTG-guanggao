@@ -304,6 +304,10 @@ class MainWindow(QMainWindow):
             raise RuntimeError("请先停止群发功能")
 
     def _open_dock(self, dock) -> None:
+        if hasattr(dock, "open_panel") and callable(dock.open_panel):
+            dock.open_panel()
+            return
+
         dock.show()
         dock.raise_()
         dock.activateWindow()

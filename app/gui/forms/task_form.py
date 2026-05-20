@@ -93,11 +93,13 @@ class TaskForm(QWidget):
 
         self.text_edit = QPlainTextEdit()
         self.text_edit.setPlaceholderText("纯文本消息内容")
-        style_text_editor(self.text_edit, 130)
+        self.text_edit.setMaximumHeight(86)
+        style_text_editor(self.text_edit, 78)
 
         self.remark_edit = QPlainTextEdit()
         self.remark_edit.setPlaceholderText("备注")
-        style_text_editor(self.remark_edit, 110)
+        self.remark_edit.setMaximumHeight(76)
+        style_text_editor(self.remark_edit, 68)
 
         self.add_button = QPushButton("新增")
         self.save_button = QPushButton("保存")
@@ -109,7 +111,7 @@ class TaskForm(QWidget):
         self.clear_form()
 
     def _build_ui(self) -> None:
-        self.setMinimumSize(720, 680)
+        self.setMinimumSize(1020, 760)
         self.setSizePolicy(
             QSizePolicy.Policy.Preferred,
             QSizePolicy.Policy.MinimumExpanding,
@@ -117,10 +119,10 @@ class TaskForm(QWidget):
 
         grid = QGridLayout()
         grid.setContentsMargins(10, 8, 10, 8)
-        grid.setHorizontalSpacing(18)
-        grid.setVerticalSpacing(14)
-        grid.setColumnMinimumWidth(0, 98)
-        grid.setColumnMinimumWidth(2, 98)
+        grid.setHorizontalSpacing(24)
+        grid.setVerticalSpacing(16)
+        grid.setColumnMinimumWidth(0, 108)
+        grid.setColumnMinimumWidth(2, 108)
         grid.setColumnStretch(1, 1)
         grid.setColumnStretch(3, 1)
 
@@ -156,7 +158,7 @@ class TaskForm(QWidget):
 
         button_layout = QHBoxLayout()
         button_layout.setContentsMargins(0, 10, 0, 0)
-        button_layout.setSpacing(14)
+        button_layout.setSpacing(28)
         button_layout.addStretch(1)
         button_layout.addWidget(self.add_button)
         button_layout.addWidget(self.save_button)
@@ -174,8 +176,8 @@ class TaskForm(QWidget):
 
     @staticmethod
     def _style_action_button(button: QPushButton) -> None:
-        button.setMinimumWidth(120)
-        button.setMinimumHeight(38)
+        button.setMinimumWidth(150)
+        button.setMinimumHeight(44)
 
     @staticmethod
     def _add_labeled_widget(
@@ -414,8 +416,8 @@ class TaskForm(QWidget):
 
     @staticmethod
     def _style_action_button(button: QPushButton) -> None:
-        button.setMinimumWidth(120)
-        button.setMinimumHeight(38)
+        button.setMinimumWidth(150)
+        button.setMinimumHeight(44)
 
     @staticmethod
     def _normalize_text_values(values: list[Any]) -> list[str]:
