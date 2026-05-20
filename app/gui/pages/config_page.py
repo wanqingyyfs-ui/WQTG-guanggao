@@ -39,6 +39,9 @@ from app.gui.widgets.no_wheel import (
 )
 
 
+MAX_MILLISECONDS = 365 * 24 * 60 * 60 * 1000
+
+
 class ConfigPage(QWidget):
     def __init__(self, runtime_service, parent=None):
         super().__init__(parent)
@@ -253,8 +256,9 @@ class ConfigPage(QWidget):
         self.default_task_schedule_mode_combo.addItem("间隔执行", SCHEDULE_MODE_INTERVAL)
         self.default_task_schedule_mode_combo.addItem("每日定时", SCHEDULE_MODE_DAILY)
 
-        self.default_task_interval_ms_spin = NoWheelSpinBox()
-        self.default_task_interval_ms_spin.setRange(0, 365 * 24 * 60 * 60 * 1000)
+        self.default_task_interval_ms_spin = NoWheelDoubleSpinBox()
+        self.default_task_interval_ms_spin.setRange(0, MAX_MILLISECONDS)
+        self.default_task_interval_ms_spin.setDecimals(0)
         self.default_task_interval_ms_spin.setSingleStep(1000)
         self.default_task_interval_ms_spin.setSuffix(" 毫秒")
 
@@ -559,10 +563,10 @@ class ConfigPage(QWidget):
             return False
 
     def _build_settings_from_controls(self) -> Settings:
-        account_delay_min_ms = self.default_task_account_delay_min_ms_spin.value()
-        account_delay_max_ms = self.default_task_account_delay_max_ms_spin.value()
-        group_delay_min_ms = self.default_task_group_delay_min_ms_spin.value()
-        group_delay_max_ms = self.default_task_group_delay_max_ms_spin.value()
+        account_delay_min_ms = int(self.default_task_account_delay_min_ms_spin.value())
+        account_delay_max_ms = int(self.default_task_account_delay_max_ms_spin.value())
+        group_delay_min_ms = int(self.default_task_group_delay_min_ms_spin.value())
+        group_delay_max_ms = int(self.default_task_group_delay_max_ms_spin.value())
 
         if account_delay_max_ms < account_delay_min_ms:
             account_delay_max_ms = account_delay_min_ms

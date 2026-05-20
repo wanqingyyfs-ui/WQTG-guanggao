@@ -50,9 +50,13 @@ from app.gui.pages.layout_utils import (
 )
 from app.gui.widgets.no_wheel import (
     NoWheelComboBox,
+    NoWheelDoubleSpinBox,
     NoWheelSpinBox,
     NoWheelTimeEdit,
 )
+
+
+MAX_MILLISECONDS = 365 * 24 * 60 * 60 * 1000
 
 
 class TaskPage(QWidget):
@@ -171,8 +175,9 @@ class TaskPage(QWidget):
         self.schedule_mode_combo.addItem("间隔", SCHEDULE_MODE_INTERVAL)
         self.schedule_mode_combo.addItem("每日", SCHEDULE_MODE_DAILY)
 
-        self.interval_ms_spin = NoWheelSpinBox()
-        self.interval_ms_spin.setRange(0, 365 * 24 * 60 * 60 * 1000)
+        self.interval_ms_spin = NoWheelDoubleSpinBox()
+        self.interval_ms_spin.setRange(0, MAX_MILLISECONDS)
+        self.interval_ms_spin.setDecimals(0)
         self.interval_ms_spin.setSingleStep(1000)
         self.interval_ms_spin.setSuffix(" 毫秒")
         self.interval_ms_spin.setToolTip(
