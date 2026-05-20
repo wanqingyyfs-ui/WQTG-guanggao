@@ -341,50 +341,78 @@ class SchedulerService:
         account_delay_min_ms, account_delay_max_ms = self._get_account_delay_range_ms(task)
         group_delay_min_ms, group_delay_max_ms = self._get_group_delay_range_ms(task)
 
+        traversal_mode = self._choose_traversal_mode(
+            account_delay_min_ms=account_delay_min_ms,
+            account_delay_max_ms=account_delay_max_ms,
+            group_delay_min_ms=group_delay_min_ms,
+            group_delay_max_ms=group_delay_max_ms,
+        )
+        sequence = self._build_send_sequence(
+            account_names=account_names,
+            groups=groups,
+            traversal_mode=traversal_mode,
+        )
+
         self._log(
             "info",
-            f"开始多账号多群组轮询任务 | task={task.task_name} | "
+            f"开始多账号多群组交叉轮询任务 | task={task.task_name} | "
             f"accounts={len(account_names)} | groups={len(groups)} | "
+            f"traversal_mode={traversal_mode} | "
             f"account_delay={account_delay_min_ms}-{account_delay_max_ms}ms | "
             f"group_delay={group_delay_min_ms}-{group_delay_max_ms}ms | "
             f"max_concurrent_tasks={self._get_max_concurrent_tasks(self.settings)}",
         )
 
         all_results: list[SendResult] = []
+        last_result: SendResult | None = None
 
-        for account_position, account_name in enumerate(account_names):
+        for position, (account_name, group) in enumerate(sequence):
             if self._stop_event.is_set():
                 break
 
-            source_account_index = self._source_account_index(task, account_name)
-            account_results = await self._execute_account_group_pipeline(
+            result = await self._execute_sequence_item(
                 task=task,
                 account_name=account_name,
-                account_index=source_account_index,
-                account_position=account_position,
-                account_count=len(account_names),
+                group=group,
+                account_names=account_names,
                 groups=groups,
+                sequence_position=position,
+                sequence_count=len(sequence),
+            )
+
+            account_delay_ms, group_delay_ms = self._delay_for_next_transition(
+                sequence=sequence,
+                position=position,
+                traversal_mode=traversal_mode,
+                account_delay_min_ms=account_delay_min_ms,
+                account_delay_max_ms=account_delay_max_ms,
                 group_delay_min_ms=group_delay_min_ms,
                 group_delay_max_ms=group_delay_max_ms,
             )
-
-            account_delay_ms = self._random_delay_ms(
-                account_delay_min_ms,
-                account_delay_max_ms,
+            self._apply_actual_transition_delay(
+                result=result,
+                account_delay_ms=account_delay_ms,
+                group_delay_ms=group_delay_ms,
             )
-            self._apply_actual_account_delay(account_results, account_delay_ms)
-            self._append_results_to_log(account_results)
-            all_results.extend(account_results)
+            self.task_log_service.append_result(result)
 
-            await self._sleep_after_account(task, account_name, account_delay_ms)
+            all_results.append(result)
+            last_result = result
+
+            await self._sleep_after_transition(
+                task=task,
+                account_name=account_name,
+                group=group,
+                account_delay_ms=account_delay_ms,
+                group_delay_ms=group_delay_ms,
+                traversal_mode=traversal_mode,
+            )
 
         success_count = 0
         failed_count = 0
         skipped_count = 0
-        last_result: SendResult | None = None
 
         for result in all_results:
-            last_result = result
             if getattr(result, "status", "") == SEND_STATUS_SUCCESS:
                 success_count += 1
             elif getattr(result, "status", "") == SEND_STATUS_SKIPPED:
@@ -401,158 +429,229 @@ class SchedulerService:
 
         self._log(
             "info",
-            f"多账号多群组轮询任务结束 | task={task.task_name} | "
+            f"多账号多群组交叉轮询任务结束 | task={task.task_name} | "
+            f"traversal_mode={traversal_mode} | "
             f"success={success_count} | failed={failed_count} | skipped={skipped_count}",
         )
 
         return last_result
 
-    async def _execute_account_group_pipeline(
+    async def _execute_sequence_item(
         self,
         task: SendTaskConfig,
         account_name: str,
-        account_index: int,
-        account_position: int,
-        account_count: int,
+        group: GroupConfig,
+        account_names: list[str],
         groups: list[GroupConfig],
-        group_delay_min_ms: int,
-        group_delay_max_ms: int,
-    ) -> list[SendResult]:
-        results: list[SendResult] = []
-
-        if self._stop_event.is_set():
-            return results
+        sequence_position: int,
+        sequence_count: int,
+    ) -> SendResult:
+        account_index = self._source_account_index(task, account_name)
+        group_index = self._source_group_index(task, group.group_id)
 
         account = self._find_account(account_name)
         if account is None:
             self._log(
                 "error",
-                f"轮询账号不存在，已跳过该账号全部群组 | task={task.task_name} | account={account_name}",
+                f"轮询账号不存在，已跳过本次动作 | task={task.task_name} | "
+                f"account={account_name} | group={group.group_name}",
             )
-            for group_position, group in enumerate(groups):
-                if self._stop_event.is_set():
-                    break
-
-                result = self._build_failed_result(
-                    task=task,
-                    group=group,
-                    account_name=account_name,
-                    account_index=account_index,
-                    group_index=self._source_group_index(task, group.group_id),
-                    error=f"账号不存在: {account_name}",
-                )
-                group_delay_ms = self._random_delay_ms(group_delay_min_ms, group_delay_max_ms)
-                self._apply_actual_group_delay(result, group_delay_ms)
-                results.append(result)
-                await self._sleep_after_group(task, account_name, group, group_delay_ms, group_position, len(groups))
-            return results
+            return self._build_failed_result(
+                task=task,
+                group=group,
+                account_name=account_name,
+                account_index=account_index,
+                group_index=group_index,
+                error=f"账号不存在: {account_name}",
+            )
 
         if not account.enabled:
             self._log(
                 "warning",
-                f"轮询账号未启用，已跳过该账号全部群组 | task={task.task_name} | account={account.account_name}",
+                f"轮询账号未启用，已跳过本次动作 | task={task.task_name} | "
+                f"account={account.account_name} | group={group.group_name}",
             )
-            for group_position, group in enumerate(groups):
-                if self._stop_event.is_set():
-                    break
-
-                result = self._build_failed_result(
-                    task=task,
-                    group=group,
-                    account_name=account.account_name,
-                    account_index=account_index,
-                    group_index=self._source_group_index(task, group.group_id),
-                    error=f"账号未启用: {account.account_name}",
-                )
-                group_delay_ms = self._random_delay_ms(group_delay_min_ms, group_delay_max_ms)
-                self._apply_actual_group_delay(result, group_delay_ms)
-                results.append(result)
-                await self._sleep_after_group(task, account.account_name, group, group_delay_ms, group_position, len(groups))
-            return results
+            return self._build_failed_result(
+                task=task,
+                group=group,
+                account_name=account.account_name,
+                account_index=account_index,
+                group_index=group_index,
+                error=f"账号未启用: {account.account_name}",
+            )
 
         try:
             client = await self.client_manager.ensure_account_started(account.account_name)
         except Exception as exc:
             self._log(
                 "error",
-                f"轮询账号启动失败，已跳过该账号全部群组 | task={task.task_name} | "
-                f"account={account.account_name} | error={exc}",
+                f"轮询账号启动失败，已跳过本次动作 | task={task.task_name} | "
+                f"account={account.account_name} | group={group.group_name} | error={exc}",
             )
-            for group_position, group in enumerate(groups):
-                if self._stop_event.is_set():
-                    break
-
-                result = self._build_failed_result(
-                    task=task,
-                    group=group,
-                    account_name=account.account_name,
-                    account_index=account_index,
-                    group_index=self._source_group_index(task, group.group_id),
-                    error=f"账号启动失败: {exc}",
-                )
-                group_delay_ms = self._random_delay_ms(group_delay_min_ms, group_delay_max_ms)
-                self._apply_actual_group_delay(result, group_delay_ms)
-                results.append(result)
-                await self._sleep_after_group(task, account.account_name, group, group_delay_ms, group_position, len(groups))
-            return results
-
-        for group_position, group in enumerate(groups):
-            if self._stop_event.is_set():
-                return results
-
-            group_index = self._source_group_index(task, group.group_id)
-            task_snapshot = self._build_task_snapshot(
+            return self._build_failed_result(
                 task=task,
+                group=group,
                 account_name=account.account_name,
-                group_id=group.group_id,
                 account_index=account_index,
                 group_index=group_index,
+                error=f"账号启动失败: {exc}",
             )
 
+        task_snapshot = self._build_task_snapshot(
+            task=task,
+            account_name=account.account_name,
+            group_id=group.group_id,
+            account_index=account_index,
+            group_index=group_index,
+        )
+
+        self._log(
+            "info",
+            f"交叉轮询发送 | task={task.task_name} | "
+            f"position={sequence_position + 1}/{sequence_count} | "
+            f"account={account.account_name} | account_index={account_index + 1}/{len(account_names)} | "
+            f"group={group.group_name} | group_index={group_index + 1}/{len(groups)}",
+        )
+
+        try:
+            return await self.group_send_service.execute_task(
+                account_name=account.account_name,
+                client=client,
+                group=group,
+                task=task_snapshot,
+                settings=self.settings,
+            )
+        except Exception as exc:
+            self._log(
+                "error",
+                f"交叉轮询发送异常 | task={task.task_name} | "
+                f"account={account.account_name} | group={group.group_name} | error={exc}",
+            )
+            return self._build_failed_result(
+                task=task_snapshot,
+                group=group,
+                account_name=account.account_name,
+                account_index=account_index,
+                group_index=group_index,
+                error=str(exc),
+            )
+
+    def _choose_traversal_mode(
+        self,
+        account_delay_min_ms: int,
+        account_delay_max_ms: int,
+        group_delay_min_ms: int,
+        group_delay_max_ms: int,
+    ) -> str:
+        account_score = self._delay_priority_score(account_delay_min_ms, account_delay_max_ms)
+        group_score = self._delay_priority_score(group_delay_min_ms, group_delay_max_ms)
+
+        if group_score > account_score:
+            return "group_major"
+
+        return "account_major"
+
+    @staticmethod
+    def _delay_priority_score(delay_min_ms: int, delay_max_ms: int) -> int:
+        return max(0, int(delay_min_ms or 0), int(delay_max_ms or 0))
+
+    @staticmethod
+    def _build_send_sequence(
+        account_names: list[str],
+        groups: list[GroupConfig],
+        traversal_mode: str,
+    ) -> list[tuple[str, GroupConfig]]:
+        sequence: list[tuple[str, GroupConfig]] = []
+
+        if traversal_mode == "group_major":
+            for group in groups:
+                for account_name in account_names:
+                    sequence.append((account_name, group))
+            return sequence
+
+        for account_name in account_names:
+            for group in groups:
+                sequence.append((account_name, group))
+
+        return sequence
+
+    def _delay_for_next_transition(
+        self,
+        sequence: list[tuple[str, GroupConfig]],
+        position: int,
+        traversal_mode: str,
+        account_delay_min_ms: int,
+        account_delay_max_ms: int,
+        group_delay_min_ms: int,
+        group_delay_max_ms: int,
+    ) -> tuple[int, int]:
+        next_position = position + 1
+        if next_position >= len(sequence):
+            return 0, 0
+
+        account_name, group = sequence[position]
+        next_account_name, next_group = sequence[next_position]
+
+        account_changed = str(account_name or "") != str(next_account_name or "")
+        group_changed = str(getattr(group, "group_id", "") or "") != str(
+            getattr(next_group, "group_id", "") or ""
+        )
+
+        if traversal_mode == "group_major":
+            if group_changed:
+                return 0, self._random_delay_ms(group_delay_min_ms, group_delay_max_ms)
+            if account_changed:
+                return self._random_delay_ms(account_delay_min_ms, account_delay_max_ms), 0
+            return 0, 0
+
+        if account_changed:
+            return self._random_delay_ms(account_delay_min_ms, account_delay_max_ms), 0
+
+        if group_changed:
+            return 0, self._random_delay_ms(group_delay_min_ms, group_delay_max_ms)
+
+        return 0, 0
+
+    @staticmethod
+    def _apply_actual_transition_delay(
+        result: SendResult | None,
+        account_delay_ms: int,
+        group_delay_ms: int,
+    ) -> None:
+        if result is None:
+            return
+
+        setattr(result, "actual_account_delay_ms", max(0, int(account_delay_ms or 0)))
+        setattr(result, "actual_group_delay_ms", max(0, int(group_delay_ms or 0)))
+
+    async def _sleep_after_transition(
+        self,
+        task: SendTaskConfig,
+        account_name: str,
+        group: GroupConfig,
+        account_delay_ms: int,
+        group_delay_ms: int,
+        traversal_mode: str,
+    ) -> None:
+        if account_delay_ms > 0:
             self._log(
                 "info",
-                f"轮询发送 | task={task.task_name} | account={account.account_name} | "
-                f"account_index={account_position + 1}/{account_count} | "
-                f"group={group.group_name} | group_index={group_position + 1}/{len(groups)}",
+                f"账号切换等待 {account_delay_ms} 毫秒 | task={task.task_name} | "
+                f"account={account_name} | group={group.group_name} | traversal_mode={traversal_mode}",
             )
+            await self._sleep_ms(account_delay_ms)
+            return
 
-            try:
-                result = await self.group_send_service.execute_task(
-                    account_name=account.account_name,
-                    client=client,
-                    group=group,
-                    task=task_snapshot,
-                    settings=self.settings,
-                )
-            except Exception as exc:
-                result = self._build_failed_result(
-                    task=task_snapshot,
-                    group=group,
-                    account_name=account.account_name,
-                    account_index=account_index,
-                    group_index=group_index,
-                    error=str(exc),
-                )
-                self._log(
-                    "error",
-                    f"轮询发送异常 | task={task.task_name} | account={account.account_name} | "
-                    f"group={group.group_name} | error={exc}",
-                )
-
-            group_delay_ms = self._random_delay_ms(group_delay_min_ms, group_delay_max_ms)
-            self._apply_actual_group_delay(result, group_delay_ms)
-            results.append(result)
-
-            await self._sleep_after_group(
-                task=task,
-                account_name=account.account_name,
-                group=group,
-                delay_ms=group_delay_ms,
-                group_position=group_position,
-                group_count=len(groups),
+        if group_delay_ms > 0:
+            self._log(
+                "info",
+                f"群组切换等待 {group_delay_ms} 毫秒 | task={task.task_name} | "
+                f"account={account_name} | group={group.group_name} | traversal_mode={traversal_mode}",
             )
+            await self._sleep_ms(group_delay_ms)
+            return
 
-        return results
+        await self._sleep_ms(0)
 
     def _append_results_to_log(self, results: list[SendResult]) -> None:
         for result in results:
