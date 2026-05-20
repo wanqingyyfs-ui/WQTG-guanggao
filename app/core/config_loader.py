@@ -46,14 +46,12 @@ def _write_json_file(file_path: str | Path, data: Any) -> None:
 def _as_dict(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return value
-
     return {}
 
 
 def _to_str(value: Any, default: str = "") -> str:
     if value is None:
         return default
-
     return str(value)
 
 
@@ -84,10 +82,8 @@ def _to_bool(value: Any, default: bool = False) -> bool:
 
     if isinstance(value, str):
         normalized = value.strip().lower()
-
         if normalized in {"1", "true", "yes", "y", "on", "是", "启用"}:
             return True
-
         if normalized in {"0", "false", "no", "n", "off", "否", "禁用"}:
             return False
 
@@ -96,19 +92,15 @@ def _to_bool(value: Any, default: bool = False) -> bool:
 
 def _to_non_negative_int(value: Any, default: int = 0) -> int:
     number = _to_int(value, default)
-
     if number < 0:
         return 0
-
     return number
 
 
 def _seconds_to_ms(value: Any, default_seconds: float = 0.0) -> int:
     seconds = _to_float(value, default_seconds)
-
     if seconds < 0:
         return 0
-
     return int(round(seconds * 1000))
 
 
@@ -124,17 +116,15 @@ def _to_str_list(value: Any) -> list[str]:
         return []
 
     result: list[str] = []
-
     for item in raw_items:
         text = str(item or "").strip()
-
         if text and text not in result:
             result.append(text)
-
     return result
 
 
 def _to_noise_text_list(value: Any) -> list[str]:
+    """噪音池允许重复文本，只清理空白项，不去重。"""
     if value is None:
         return []
 
@@ -146,19 +136,16 @@ def _to_noise_text_list(value: Any) -> list[str]:
         return []
 
     result: list[str] = []
-
     for item in raw_items:
         if isinstance(item, dict):
             if not _to_bool(item.get("enabled"), True):
                 continue
-
             text = _to_str(item.get("text"), "").strip()
         else:
             text = _to_str(item, "").strip()
 
         if text:
             result.append(text)
-
     return result
 
 
@@ -176,7 +163,6 @@ def _to_int_list(value: Any) -> list[int]:
         return []
 
     result: list[int] = []
-
     for item in raw_items:
         if item is None or item == "":
             continue
@@ -188,7 +174,6 @@ def _to_int_list(value: Any) -> list[int]:
 
         if number > 0 and number not in result:
             result.append(number)
-
     return result
 
 
@@ -198,10 +183,8 @@ def _normalize_account_names(item: dict[str, Any]) -> list[str]:
 
     if not account_names and account_name:
         account_names = [account_name]
-
     if account_name and account_name not in account_names:
         account_names.insert(0, account_name)
-
     return account_names
 
 
@@ -211,10 +194,8 @@ def _normalize_group_ids(item: dict[str, Any]) -> list[str]:
 
     if not group_ids and group_id:
         group_ids = [group_id]
-
     if group_id and group_id not in group_ids:
         group_ids.insert(0, group_id)
-
     return group_ids
 
 
@@ -224,77 +205,56 @@ def _normalize_template_ids(item: dict[str, Any]) -> list[str]:
 
     if not template_ids and template_id:
         template_ids = [template_id]
-
     if template_id and template_id not in template_ids:
         template_ids.insert(0, template_id)
-
     return template_ids
 
 
 def _normalize_account_rotate_mode(value: Any) -> str:
     rotate_mode = _to_str(value, ACCOUNT_ROTATE_MODE_SINGLE).strip()
-
-    if rotate_mode not in {
-        ACCOUNT_ROTATE_MODE_SINGLE,
-        ACCOUNT_ROTATE_MODE_ROUND_ROBIN,
-    }:
+    if rotate_mode not in {ACCOUNT_ROTATE_MODE_SINGLE, ACCOUNT_ROTATE_MODE_ROUND_ROBIN}:
         return ACCOUNT_ROTATE_MODE_SINGLE
-
     return rotate_mode
 
 
 def _normalize_group_rotate_mode(value: Any) -> str:
     rotate_mode = _to_str(value, GROUP_ROTATE_MODE_SINGLE).strip()
-
-    if rotate_mode not in {
-        GROUP_ROTATE_MODE_SINGLE,
-        GROUP_ROTATE_MODE_ROUND_ROBIN,
-    }:
+    if rotate_mode not in {GROUP_ROTATE_MODE_SINGLE, GROUP_ROTATE_MODE_ROUND_ROBIN}:
         return GROUP_ROTATE_MODE_SINGLE
-
     return rotate_mode
 
 
 def _normalize_message_mode(value: Any) -> str:
     message_mode = _to_str(value, MESSAGE_MODE_TEMPLATE).strip()
-
     if message_mode in {MESSAGE_MODE_TEXT, MESSAGE_MODE_TEMPLATE}:
         return message_mode
-
     return MESSAGE_MODE_TEMPLATE
 
 
 def _normalize_schedule_mode(value: Any) -> str:
     schedule_mode = _to_str(value, SCHEDULE_MODE_INTERVAL).strip()
-
     if schedule_mode == LEGACY_SCHEDULE_MODE_MANUAL:
         return SCHEDULE_MODE_INTERVAL
-
     if schedule_mode in {SCHEDULE_MODE_INTERVAL, SCHEDULE_MODE_DAILY}:
         return schedule_mode
-
     return SCHEDULE_MODE_INTERVAL
 
 
 def _normalize_message_type(value: Any) -> str:
     message_type = _to_str(value, TEMPLATE_MESSAGE_TYPE_TEXT).strip()
-
     if message_type in {
         TEMPLATE_MESSAGE_TYPE_TEXT,
         TEMPLATE_MESSAGE_TYPE_PHOTO,
         TEMPLATE_MESSAGE_TYPE_ALBUM,
     }:
         return message_type
-
     return TEMPLATE_MESSAGE_TYPE_TEXT
 
 
 def _normalize_send_mode(value: Any) -> str:
     send_mode = _to_str(value, TEMPLATE_SEND_MODE_FORWARD).strip()
-
     if send_mode:
         return send_mode
-
     return TEMPLATE_SEND_MODE_FORWARD
 
 
@@ -314,28 +274,23 @@ def _normalize_ms_range(
 
     if max_ms < min_ms:
         max_ms = min_ms
-
     return min_ms, max_ms
 
 
 def _normalize_interval_ms(item: dict[str, Any]) -> int:
     if "interval_ms" in item:
         return _to_non_negative_int(item.get("interval_ms"), 3600000)
-
     return _seconds_to_ms(item.get("interval_seconds"), 3600)
 
 
 def load_accounts(file_path: str) -> list[AccountConfig]:
     data = _read_json_file(file_path)
-
     if not isinstance(data, list):
         raise ValueError("accounts.json 必须是数组")
 
     accounts: list[AccountConfig] = []
-
     for raw_item in data:
         item = _as_dict(raw_item)
-
         accounts.append(
             AccountConfig(
                 account_name=_to_str(item.get("account_name", "")).strip(),
@@ -346,7 +301,6 @@ def load_accounts(file_path: str) -> list[AccountConfig]:
                 enabled=_to_bool(item.get("enabled"), True),
             )
         )
-
     return accounts
 
 
@@ -356,15 +310,12 @@ def save_accounts(file_path: str, accounts: list[AccountConfig]) -> None:
 
 def load_groups(file_path: str) -> list[GroupConfig]:
     data = _read_json_file(file_path)
-
     if not isinstance(data, list):
         raise ValueError("groups.json 必须是数组")
 
     groups: list[GroupConfig] = []
-
     for raw_item in data:
         item = _as_dict(raw_item)
-
         groups.append(
             GroupConfig(
                 group_id=_to_str(item.get("group_id", "")).strip(),
@@ -375,7 +326,6 @@ def load_groups(file_path: str) -> list[GroupConfig]:
                 enabled=_to_bool(item.get("enabled"), True),
             )
         )
-
     return groups
 
 
@@ -385,12 +335,10 @@ def save_groups(file_path: str, groups: list[GroupConfig]) -> None:
 
 def load_tasks(file_path: str) -> list[SendTaskConfig]:
     data = _read_json_file(file_path)
-
     if not isinstance(data, list):
         raise ValueError("tasks.json 必须是数组")
 
     tasks: list[SendTaskConfig] = []
-
     for raw_item in data:
         item = _as_dict(raw_item)
 
@@ -430,13 +378,8 @@ def load_tasks(file_path: str) -> list[SendTaskConfig]:
                 enabled=_to_bool(item.get("enabled"), True),
                 account_name=account_name,
                 account_names=account_names,
-                account_rotate_mode=_normalize_account_rotate_mode(
-                    item.get("account_rotate_mode")
-                ),
-                current_account_index=_to_non_negative_int(
-                    item.get("current_account_index"),
-                    0,
-                ),
+                account_rotate_mode=_normalize_account_rotate_mode(item.get("account_rotate_mode")),
+                current_account_index=_to_non_negative_int(item.get("current_account_index"), 0),
                 account_delay_min_ms=account_delay_min_ms,
                 account_delay_max_ms=account_delay_max_ms,
                 account_delay_seconds=_to_non_negative_int(
@@ -445,13 +388,8 @@ def load_tasks(file_path: str) -> list[SendTaskConfig]:
                 ),
                 group_id=group_id,
                 group_ids=group_ids,
-                group_rotate_mode=_normalize_group_rotate_mode(
-                    item.get("group_rotate_mode")
-                ),
-                current_group_index=_to_non_negative_int(
-                    item.get("current_group_index"),
-                    0,
-                ),
+                group_rotate_mode=_normalize_group_rotate_mode(item.get("group_rotate_mode")),
+                current_group_index=_to_non_negative_int(item.get("current_group_index"), 0),
                 group_delay_min_ms=group_delay_min_ms,
                 group_delay_max_ms=group_delay_max_ms,
                 group_delay_seconds=_to_non_negative_int(
@@ -468,22 +406,14 @@ def load_tasks(file_path: str) -> list[SendTaskConfig]:
                     item.get("interval_seconds"),
                     int(interval_ms // 1000),
                 ),
-                daily_time=_to_str(item.get("daily_time", "09:00")).strip()
-                or "09:00",
-                random_delay_min=_to_non_negative_int(
-                    item.get("random_delay_min"),
-                    0,
-                ),
-                random_delay_max=_to_non_negative_int(
-                    item.get("random_delay_max"),
-                    0,
-                ),
+                daily_time=_to_str(item.get("daily_time", "09:00")).strip() or "09:00",
+                random_delay_min=_to_non_negative_int(item.get("random_delay_min"), 0),
+                random_delay_max=_to_non_negative_int(item.get("random_delay_max"), 0),
                 last_run_at=_to_str(item.get("last_run_at", "")).strip(),
                 next_run_at=_to_str(item.get("next_run_at", "")).strip(),
                 remark=_to_str(item.get("remark", "")),
             )
         )
-
     return tasks
 
 
@@ -493,22 +423,17 @@ def save_tasks(file_path: str, tasks: list[SendTaskConfig]) -> None:
 
 def load_templates(file_path: str) -> list[TemplateConfig]:
     data = _read_json_file(file_path)
-
     if not isinstance(data, list):
         raise ValueError("templates.json 必须是数组")
 
     templates: list[TemplateConfig] = []
-
     for raw_item in data:
         item = _as_dict(raw_item)
-
         templates.append(
             TemplateConfig(
                 template_id=_to_str(item.get("template_id", "")).strip(),
                 template_name=_to_str(item.get("template_name", "")).strip(),
-                source_account_name=_to_str(
-                    item.get("source_account_name", "")
-                ).strip(),
+                source_account_name=_to_str(item.get("source_account_name", "")).strip(),
                 source_chat_id=_to_int(item.get("source_chat_id"), 0),
                 source_chat_title=_to_str(item.get("source_chat_title", "")),
                 source_message_ids=_to_int_list(item.get("source_message_ids")),
@@ -525,7 +450,6 @@ def load_templates(file_path: str) -> list[TemplateConfig]:
                 remark=_to_str(item.get("remark", "")),
             )
         )
-
     return templates
 
 
@@ -535,10 +459,8 @@ def save_templates(file_path: str, templates: list[TemplateConfig]) -> None:
 
 def load_settings(file_path: str) -> Settings:
     data = _read_json_file(file_path)
-
     if not isinstance(data, dict):
         raise ValueError("settings.json 必须是对象")
-
     return Settings.from_dict(data)
 
 
@@ -548,10 +470,8 @@ def save_settings(file_path: str, settings: Settings) -> None:
 
 def load_noise_pool(file_path: str) -> list[str]:
     data = _read_json_file(file_path)
-
     if not isinstance(data, list):
         raise ValueError("noise_pool.json 必须是数组")
-
     return _to_noise_text_list(data)
 
 

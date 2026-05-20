@@ -45,7 +45,6 @@ LOG_MESSAGE_MODE_SKIP = "skip"
 def _to_str(value: Any, default: str = "") -> str:
     if value is None:
         return default
-
     return str(value)
 
 
@@ -76,10 +75,8 @@ def _to_bool(value: Any, default: bool = False) -> bool:
 
     if isinstance(value, str):
         normalized = value.strip().lower()
-
         if normalized in {"1", "true", "yes", "y", "on", "是", "启用"}:
             return True
-
         if normalized in {"0", "false", "no", "n", "off", "否", "禁用"}:
             return False
 
@@ -88,56 +85,44 @@ def _to_bool(value: Any, default: bool = False) -> bool:
 
 def _to_non_negative_int(value: Any, default: int = 0) -> int:
     number = _to_int(value, default)
-
     if number < 0:
         return 0
-
     return number
 
 
 def _to_positive_int(value: Any, default: int = 1) -> int:
     number = _to_int(value, default)
-
     if number <= 0:
         return default
-
     return number
 
 
 def _seconds_to_ms(value: Any, default_seconds: float = 0.0) -> int:
     seconds = _to_float(value, default_seconds)
-
     if seconds < 0:
         return 0
-
     return int(round(seconds * 1000))
 
 
 def _ms_to_legacy_seconds(value: Any) -> int:
     ms = _to_non_negative_int(value, 0)
-
     return int(ms // 1000)
 
 
 def _normalize_probability(value: Any, default: int) -> int:
     number = _to_int(value, default)
-
     if number < 0:
         return 0
-
     if number > 100:
         return 100
-
     return number
 
 
 def _normalize_delay_range(min_ms: Any, max_ms: Any) -> tuple[int, int]:
     normalized_min_ms = _to_non_negative_int(min_ms, 0)
     normalized_max_ms = _to_non_negative_int(max_ms, normalized_min_ms)
-
     if normalized_max_ms < normalized_min_ms:
         normalized_max_ms = normalized_min_ms
-
     return normalized_min_ms, normalized_max_ms
 
 
@@ -153,50 +138,38 @@ def _normalize_unique_text_list(value: Any) -> list[str]:
         return []
 
     result: list[str] = []
-
     for item in raw_items:
         text = str(item or "").strip()
-
         if text and text not in result:
             result.append(text)
-
     return result
 
 
-def _normalize_rotate_mode(
-    value: Any,
-    allowed_modes: set[str],
-    default: str,
-) -> str:
+def _normalize_rotate_mode(value: Any, allowed_modes: set[str], default: str) -> str:
     rotate_mode = str(value or "").strip()
-
     if rotate_mode in allowed_modes:
         return rotate_mode
-
     return default
 
 
 def _normalize_message_mode(value: Any, default: str = MESSAGE_MODE_TEMPLATE) -> str:
     message_mode = str(value or "").strip()
-
     if message_mode in {MESSAGE_MODE_TEXT, MESSAGE_MODE_TEMPLATE}:
         return message_mode
-
     return default
 
 
 def _normalize_schedule_mode(value: Any, default: str = SCHEDULE_MODE_INTERVAL) -> str:
     schedule_mode = str(value or "").strip()
-
+    if schedule_mode == LEGACY_SCHEDULE_MODE_MANUAL:
+        return SCHEDULE_MODE_INTERVAL
     if schedule_mode in {SCHEDULE_MODE_INTERVAL, SCHEDULE_MODE_DAILY}:
         return schedule_mode
-
     return default
 
 
 def _normalize_daily_time(value: Any, default: str = "09:00") -> str:
     raw_text = str(value or "").strip()
-
     if not raw_text:
         raw_text = default
 
@@ -209,7 +182,6 @@ def _normalize_daily_time(value: Any, default: str = "09:00") -> str:
 
     if hour < 0 or hour > 23:
         return default
-
     if minute < 0 or minute > 59:
         return default
 
@@ -281,10 +253,7 @@ class TemplateConfig:
         self.has_custom_emoji = _to_bool(self.has_custom_emoji, False)
         self.has_media = _to_bool(
             self.has_media,
-            self.message_type in {
-                TEMPLATE_MESSAGE_TYPE_PHOTO,
-                TEMPLATE_MESSAGE_TYPE_ALBUM,
-            },
+            self.message_type in {TEMPLATE_MESSAGE_TYPE_PHOTO, TEMPLATE_MESSAGE_TYPE_ALBUM},
         )
         self.media_count = _to_non_negative_int(self.media_count, 0)
         self.preview_images = _normalize_unique_text_list(self.preview_images)
@@ -295,26 +264,19 @@ class TemplateConfig:
     @staticmethod
     def _normalize_message_type(value: Any) -> str:
         message_type = str(value or TEMPLATE_MESSAGE_TYPE_TEXT).strip()
-
         if message_type in {
             TEMPLATE_MESSAGE_TYPE_TEXT,
             TEMPLATE_MESSAGE_TYPE_PHOTO,
             TEMPLATE_MESSAGE_TYPE_ALBUM,
         }:
             return message_type
-
         return TEMPLATE_MESSAGE_TYPE_TEXT
 
     @staticmethod
     def _normalize_send_mode(value: Any) -> str:
         send_mode = str(value or TEMPLATE_SEND_MODE_FORWARD).strip()
-
-        if send_mode in {
-            TEMPLATE_SEND_MODE_FORWARD,
-            TEMPLATE_SEND_MODE_CLONE,
-        }:
+        if send_mode in {TEMPLATE_SEND_MODE_FORWARD, TEMPLATE_SEND_MODE_CLONE}:
             return send_mode
-
         return TEMPLATE_SEND_MODE_FORWARD
 
     @staticmethod
@@ -332,13 +294,10 @@ class TemplateConfig:
             return []
 
         result: list[int] = []
-
         for item in raw_items:
             message_id = _to_int(str(item).strip(), 0)
-
             if message_id > 0 and message_id not in result:
                 result.append(message_id)
-
         return result
 
     def to_dict(self) -> dict[str, Any]:
@@ -438,16 +397,10 @@ class SendTaskConfig:
         self.account_names = self._normalize_account_names()
         self.account_rotate_mode = _normalize_rotate_mode(
             self.account_rotate_mode,
-            {
-                ACCOUNT_ROTATE_MODE_SINGLE,
-                ACCOUNT_ROTATE_MODE_ROUND_ROBIN,
-            },
+            {ACCOUNT_ROTATE_MODE_SINGLE, ACCOUNT_ROTATE_MODE_ROUND_ROBIN},
             ACCOUNT_ROTATE_MODE_SINGLE,
         )
-        self.current_account_index = _to_non_negative_int(
-            self.current_account_index,
-            0,
-        )
+        self.current_account_index = _to_non_negative_int(self.current_account_index, 0)
 
         if _to_int(self.account_delay_min_ms, -1) < 0:
             legacy_account_delay_ms = _seconds_to_ms(self.account_delay_seconds, 0)
@@ -464,16 +417,10 @@ class SendTaskConfig:
         self.group_ids = self._normalize_group_ids()
         self.group_rotate_mode = _normalize_rotate_mode(
             self.group_rotate_mode,
-            {
-                GROUP_ROTATE_MODE_SINGLE,
-                GROUP_ROTATE_MODE_ROUND_ROBIN,
-            },
+            {GROUP_ROTATE_MODE_SINGLE, GROUP_ROTATE_MODE_ROUND_ROBIN},
             GROUP_ROTATE_MODE_SINGLE,
         )
-        self.current_group_index = _to_non_negative_int(
-            self.current_group_index,
-            0,
-        )
+        self.current_group_index = _to_non_negative_int(self.current_group_index, 0)
 
         if _to_int(self.group_delay_min_ms, -1) < 0:
             legacy_group_delay_ms = _seconds_to_ms(self.group_delay_seconds, 0)
@@ -510,44 +457,32 @@ class SendTaskConfig:
 
     def _normalize_account_names(self) -> list[str]:
         normalized_account_names = _normalize_unique_text_list(self.account_names)
-
         if not normalized_account_names and self.account_name:
             normalized_account_names.append(self.account_name)
-
         if self.account_name and self.account_name not in normalized_account_names:
             normalized_account_names.insert(0, self.account_name)
-
         if not self.account_name and normalized_account_names:
             self.account_name = normalized_account_names[0]
-
         return normalized_account_names
 
     def _normalize_group_ids(self) -> list[str]:
         normalized_group_ids = _normalize_unique_text_list(self.group_ids)
-
         if not normalized_group_ids and self.group_id:
             normalized_group_ids.append(self.group_id)
-
         if self.group_id and self.group_id not in normalized_group_ids:
             normalized_group_ids.insert(0, self.group_id)
-
         if not self.group_id and normalized_group_ids:
             self.group_id = normalized_group_ids[0]
-
         return normalized_group_ids
 
     def _normalize_template_ids(self) -> list[str]:
         normalized_template_ids = _normalize_unique_text_list(self.template_ids)
-
         if not normalized_template_ids and self.template_id:
             normalized_template_ids.append(self.template_id)
-
         if self.template_id and self.template_id not in normalized_template_ids:
             normalized_template_ids.insert(0, self.template_id)
-
         if not self.template_id and normalized_template_ids:
             self.template_id = normalized_template_ids[0]
-
         return normalized_template_ids
 
     def to_dict(self) -> dict[str, Any]:
@@ -653,9 +588,7 @@ class Settings:
             0.0,
             _to_float(self.default_send_interval_seconds, 1.0),
         )
-        self.template_source_account_name = str(
-            self.template_source_account_name or ""
-        ).strip()
+        self.template_source_account_name = str(self.template_source_account_name or "").strip()
         self.template_source_chat_id = _to_int(self.template_source_chat_id, 0)
 
         self.ad_probability = _normalize_probability(self.ad_probability, 75)
@@ -676,10 +609,7 @@ class Settings:
 
         self.default_task_account_rotate_mode = _normalize_rotate_mode(
             self.default_task_account_rotate_mode,
-            {
-                ACCOUNT_ROTATE_MODE_SINGLE,
-                ACCOUNT_ROTATE_MODE_ROUND_ROBIN,
-            },
+            {ACCOUNT_ROTATE_MODE_SINGLE, ACCOUNT_ROTATE_MODE_ROUND_ROBIN},
             ACCOUNT_ROTATE_MODE_SINGLE,
         )
         (
@@ -691,10 +621,7 @@ class Settings:
         )
         self.default_task_group_rotate_mode = _normalize_rotate_mode(
             self.default_task_group_rotate_mode,
-            {
-                GROUP_ROTATE_MODE_SINGLE,
-                GROUP_ROTATE_MODE_ROUND_ROBIN,
-            },
+            {GROUP_ROTATE_MODE_SINGLE, GROUP_ROTATE_MODE_ROUND_ROBIN},
             GROUP_ROTATE_MODE_SINGLE,
         )
         (
@@ -725,10 +652,7 @@ class Settings:
         self.table_font_size = _to_positive_int(self.table_font_size, 13)
         self.button_font_size = _to_positive_int(self.button_font_size, 13)
         self.input_font_size = _to_positive_int(self.input_font_size, 13)
-        self.floating_panel_font_size = _to_positive_int(
-            self.floating_panel_font_size,
-            13,
-        )
+        self.floating_panel_font_size = _to_positive_int(self.floating_panel_font_size, 13)
 
         self.account_panel_font_size = _to_positive_int(
             self.account_panel_font_size,
@@ -771,60 +695,39 @@ class Settings:
             safe_data.get("default_send_interval_seconds"),
             1.0,
         )
-        default_task_interval_ms = _to_non_negative_int(
-            safe_data.get("default_task_interval_ms"),
-            _seconds_to_ms(default_send_interval_seconds, 3600.0),
-        )
+
+        if "default_task_interval_ms" in safe_data:
+            default_task_interval_ms = _to_non_negative_int(
+                safe_data.get("default_task_interval_ms"),
+                3600000,
+            )
+        elif "default_send_interval_seconds" in safe_data:
+            default_task_interval_ms = _seconds_to_ms(
+                safe_data.get("default_send_interval_seconds"),
+                3600.0,
+            )
+        else:
+            default_task_interval_ms = 3600000
 
         return cls(
-            app_name=_to_str(
-                safe_data.get("app_name"),
-                "telegram_user_group_sender_gui",
-            ),
+            app_name=_to_str(safe_data.get("app_name"), "telegram_user_group_sender_gui"),
             log_level=_to_str(safe_data.get("log_level"), "INFO"),
             log_file=_to_str(safe_data.get("log_file"), "logs/app.log"),
             sessions_dir=_to_str(safe_data.get("sessions_dir"), ""),
-            scheduler_tick_seconds=_to_float(
-                safe_data.get("scheduler_tick_seconds"),
-                1.0,
-            ),
-            max_concurrent_tasks=_to_non_negative_int(
-                safe_data.get("max_concurrent_tasks"),
-                0,
-            ),
+            scheduler_tick_seconds=_to_float(safe_data.get("scheduler_tick_seconds"), 1.0),
+            max_concurrent_tasks=_to_non_negative_int(safe_data.get("max_concurrent_tasks"), 0),
             default_send_interval_seconds=default_send_interval_seconds,
             template_source_account_name=_to_str(
                 safe_data.get("template_source_account_name"),
                 "",
             ),
-            template_source_chat_id=_to_int(
-                safe_data.get("template_source_chat_id"),
-                0,
-            ),
-            ad_probability=_normalize_probability(
-                safe_data.get("ad_probability"),
-                75,
-            ),
-            noise_probability=_normalize_probability(
-                safe_data.get("noise_probability"),
-                22,
-            ),
-            skip_probability=_normalize_probability(
-                safe_data.get("skip_probability"),
-                3,
-            ),
-            default_account_enabled=_to_bool(
-                safe_data.get("default_account_enabled"),
-                True,
-            ),
-            default_group_enabled=_to_bool(
-                safe_data.get("default_group_enabled"),
-                True,
-            ),
-            default_template_enabled=_to_bool(
-                safe_data.get("default_template_enabled"),
-                True,
-            ),
+            template_source_chat_id=_to_int(safe_data.get("template_source_chat_id"), 0),
+            ad_probability=_normalize_probability(safe_data.get("ad_probability"), 75),
+            noise_probability=_normalize_probability(safe_data.get("noise_probability"), 22),
+            skip_probability=_normalize_probability(safe_data.get("skip_probability"), 3),
+            default_account_enabled=_to_bool(safe_data.get("default_account_enabled"), True),
+            default_group_enabled=_to_bool(safe_data.get("default_group_enabled"), True),
+            default_template_enabled=_to_bool(safe_data.get("default_template_enabled"), True),
             default_session_name_follow_account=_to_bool(
                 safe_data.get("default_session_name_follow_account"),
                 True,
@@ -835,10 +738,7 @@ class Settings:
             ),
             default_task_account_rotate_mode=_normalize_rotate_mode(
                 safe_data.get("default_task_account_rotate_mode"),
-                {
-                    ACCOUNT_ROTATE_MODE_SINGLE,
-                    ACCOUNT_ROTATE_MODE_ROUND_ROBIN,
-                },
+                {ACCOUNT_ROTATE_MODE_SINGLE, ACCOUNT_ROTATE_MODE_ROUND_ROBIN},
                 ACCOUNT_ROTATE_MODE_SINGLE,
             ),
             default_task_account_delay_min_ms=_to_non_negative_int(
@@ -851,10 +751,7 @@ class Settings:
             ),
             default_task_group_rotate_mode=_normalize_rotate_mode(
                 safe_data.get("default_task_group_rotate_mode"),
-                {
-                    GROUP_ROTATE_MODE_SINGLE,
-                    GROUP_ROTATE_MODE_ROUND_ROBIN,
-                },
+                {GROUP_ROTATE_MODE_SINGLE, GROUP_ROTATE_MODE_ROUND_ROBIN},
                 GROUP_ROTATE_MODE_SINGLE,
             ),
             default_task_group_delay_min_ms=_to_non_negative_int(
@@ -874,26 +771,11 @@ class Settings:
                 SCHEDULE_MODE_INTERVAL,
             ),
             default_task_interval_ms=default_task_interval_ms,
-            default_task_daily_time=_to_str(
-                safe_data.get("default_task_daily_time"),
-                "09:00",
-            ),
-            global_font_size=_to_positive_int(
-                safe_data.get("global_font_size"),
-                13,
-            ),
-            table_font_size=_to_positive_int(
-                safe_data.get("table_font_size"),
-                13,
-            ),
-            button_font_size=_to_positive_int(
-                safe_data.get("button_font_size"),
-                13,
-            ),
-            input_font_size=_to_positive_int(
-                safe_data.get("input_font_size"),
-                13,
-            ),
+            default_task_daily_time=_to_str(safe_data.get("default_task_daily_time"), "09:00"),
+            global_font_size=_to_positive_int(safe_data.get("global_font_size"), 13),
+            table_font_size=_to_positive_int(safe_data.get("table_font_size"), 13),
+            button_font_size=_to_positive_int(safe_data.get("button_font_size"), 13),
+            input_font_size=_to_positive_int(safe_data.get("input_font_size"), 13),
             floating_panel_font_size=_to_positive_int(
                 safe_data.get("floating_panel_font_size"),
                 13,
@@ -902,50 +784,20 @@ class Settings:
                 safe_data.get("account_panel_font_size"),
                 13,
             ),
-            account_panel_width=_to_positive_int(
-                safe_data.get("account_panel_width"),
-                520,
-            ),
-            account_panel_height=_to_positive_int(
-                safe_data.get("account_panel_height"),
-                620,
-            ),
-            group_panel_font_size=_to_positive_int(
-                safe_data.get("group_panel_font_size"),
-                13,
-            ),
-            group_panel_width=_to_positive_int(
-                safe_data.get("group_panel_width"),
-                520,
-            ),
-            group_panel_height=_to_positive_int(
-                safe_data.get("group_panel_height"),
-                620,
-            ),
-            task_panel_font_size=_to_positive_int(
-                safe_data.get("task_panel_font_size"),
-                13,
-            ),
-            task_panel_width=_to_positive_int(
-                safe_data.get("task_panel_width"),
-                680,
-            ),
-            task_panel_height=_to_positive_int(
-                safe_data.get("task_panel_height"),
-                760,
-            ),
+            account_panel_width=_to_positive_int(safe_data.get("account_panel_width"), 520),
+            account_panel_height=_to_positive_int(safe_data.get("account_panel_height"), 620),
+            group_panel_font_size=_to_positive_int(safe_data.get("group_panel_font_size"), 13),
+            group_panel_width=_to_positive_int(safe_data.get("group_panel_width"), 520),
+            group_panel_height=_to_positive_int(safe_data.get("group_panel_height"), 620),
+            task_panel_font_size=_to_positive_int(safe_data.get("task_panel_font_size"), 13),
+            task_panel_width=_to_positive_int(safe_data.get("task_panel_width"), 680),
+            task_panel_height=_to_positive_int(safe_data.get("task_panel_height"), 760),
             template_panel_font_size=_to_positive_int(
                 safe_data.get("template_panel_font_size"),
                 13,
             ),
-            template_panel_width=_to_positive_int(
-                safe_data.get("template_panel_width"),
-                520,
-            ),
-            template_panel_height=_to_positive_int(
-                safe_data.get("template_panel_height"),
-                520,
-            ),
+            template_panel_width=_to_positive_int(safe_data.get("template_panel_width"), 520),
+            template_panel_height=_to_positive_int(safe_data.get("template_panel_height"), 520),
             config_auto_save_debounce_ms=_to_positive_int(
                 safe_data.get("config_auto_save_debounce_ms"),
                 400,

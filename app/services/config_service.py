@@ -31,10 +31,8 @@ APP_NAME = "万青TG群发任务"
 
 def get_appdata_base_dir(app_name: str = APP_NAME) -> Path:
     local_appdata = os.environ.get("LOCALAPPDATA")
-
     if local_appdata:
         return Path(local_appdata).expanduser() / app_name
-
     return Path.home() / "AppData" / "Local" / app_name
 
 
@@ -46,17 +44,14 @@ def resolve_base_dir(base_dir: str | Path | None = None) -> Path:
     - RuntimeService() 默认传入 "."
     - 旧 ConfigService(base_dir=".") 过去实际也是使用 AppData
 
-    所以这里把 None、空字符串、"." 都解析为 AppData，
-    避免升级后数据目录突然变到项目根目录。
+    所以这里把 None、空字符串、"." 都解析为 AppData，避免升级后数据目录突然变到项目根目录。
     """
     if base_dir is None:
         return get_appdata_base_dir()
 
     base_dir_text = str(base_dir).strip()
-
     if not base_dir_text or base_dir_text == ".":
         return get_appdata_base_dir()
-
     return Path(base_dir_text).expanduser()
 
 
@@ -127,7 +122,6 @@ class ConfigService:
 
         settings.log_file = str(self.logs_dir / "app.log")
         settings.sessions_dir = str(self.sessions_dir)
-
         return accounts, groups, tasks, templates, settings, noise_pool
 
     def reload_settings(self) -> Settings:

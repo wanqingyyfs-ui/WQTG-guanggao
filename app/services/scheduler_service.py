@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import random
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from datetime import datetime, timedelta
 from typing import AsyncIterator
 
@@ -28,6 +29,21 @@ from app.services.task_log_service import TaskLogService
 
 
 class SchedulerService:
+    """群发调度器。
+
+    设计目标：
+    - 不再依赖用户可见的固定扫描间隔。
+    - 根据所有任务最近 next_run_at 精准等待。
+    - interval_ms=0 时允许任务结束后立即进入下一轮，但通过事件循环让步避免 CPU 空转。
+    - 群组延迟、账号延迟都在动作后执行，并且包括最后一个动作。
+    - 调度等待和延迟等待都能响应停止。
+    - 并发执行中不通过长期修改共享 task 对象决定本次账号、群组、模板。
+    """
+
+    MIN_IDLE_SLEEP_SECONDS = 0.05
+    ZERO_INTERVAL_YIELD_SECONDS = 0.001
+    INTERRUPTIBLE_SLEEP_SLICE_SECONDS = 0.2
+
     def __init__(
         self,
         accounts: list[AccountConfig],
@@ -57,6 +73,7 @@ class SchedulerService:
         self._stop_event = asyncio.Event()
         self._runner_task: asyncio.Task | None = None
         self._running_task_ids: set[str] = set()
+        self._background_tasks: set[asyncio.Task] = set()
         self._semaphore: asyncio.Semaphore | None = self._build_semaphore(settings)
 
     def _log(self, level: str, message: str) -> None:
@@ -84,11 +101,13 @@ class SchedulerService:
     @classmethod
     def _safe_non_negative_int(cls, value, default: int = 0) -> int:
         number = cls._safe_int(value, default)
-
         if number < 0:
             return 0
-
         return number
+
+    @staticmethod
+    def _iso_ms(value: datetime | None = None) -> str:
+        return (value or datetime.now()).isoformat(timespec="milliseconds")
 
     @classmethod
     def _get_max_concurrent_tasks(cls, settings: Settings) -> int:
@@ -100,16 +119,13 @@ class SchedulerService:
     @classmethod
     def _build_semaphore(cls, settings: Settings) -> asyncio.Semaphore | None:
         max_concurrent_tasks = cls._get_max_concurrent_tasks(settings)
-
         if max_concurrent_tasks <= 0:
             return None
-
         return asyncio.Semaphore(max_concurrent_tasks)
 
     @asynccontextmanager
     async def _concurrency_slot(self) -> AsyncIterator[None]:
         semaphore = self._semaphore
-
         if semaphore is None:
             yield
             return
@@ -155,15 +171,14 @@ class SchedulerService:
             return
 
         self._stop_event = asyncio.Event()
+        self._background_tasks.clear()
+        self._running_task_ids.clear()
         self._runner_task = asyncio.create_task(
             self.run_loop(),
             name="group-send-scheduler-loop",
         )
         self._runner_task.add_done_callback(
-            lambda task: self._handle_background_task_done(
-                task,
-                "群发调度器主循环",
-            )
+            lambda task: self._handle_background_task_done(task, "群发调度器主循环")
         )
         self._log("info", "群发调度器已启动")
 
@@ -180,41 +195,44 @@ class SchedulerService:
             except asyncio.CancelledError:
                 pass
 
+        if self._background_tasks:
+            await asyncio.gather(*self._background_tasks, return_exceptions=True)
+
         self._runner_task = None
+        self._background_tasks.clear()
         self._running_task_ids.clear()
         self._log("info", "群发调度器已停止")
 
     async def run_loop(self) -> None:
         while not self._stop_event.is_set():
             try:
-                await self.run_due_tasks()
+                started_count = await self.run_due_tasks()
             except Exception as exc:
+                started_count = 0
                 self._log("error", f"群发调度循环异常: {exc}")
 
-            tick_seconds = max(
-                0.05,
-                self._safe_float(
-                    getattr(self.settings, "scheduler_tick_seconds", 1.0),
-                    1.0,
-                ),
-            )
+            if self._stop_event.is_set():
+                break
 
-            try:
-                await asyncio.wait_for(
-                    self._stop_event.wait(),
-                    timeout=tick_seconds,
-                )
-            except asyncio.TimeoutError:
-                pass
+            if started_count > 0:
+                await asyncio.sleep(self.ZERO_INTERVAL_YIELD_SECONDS)
+                continue
 
-    async def run_due_tasks(self) -> None:
+            timeout_seconds = self._seconds_until_nearest_task(datetime.now())
+            await self._wait_for_next_scheduler_event(timeout_seconds)
+
+    async def run_due_tasks(self) -> int:
         now = datetime.now()
+        started_count = 0
 
         for task in list(self.tasks):
             if self._stop_event.is_set():
-                return
+                return started_count
 
             if not getattr(task, "enabled", True):
+                continue
+
+            if not str(getattr(task, "task_id", "") or "").strip():
                 continue
 
             if task.task_id in self._running_task_ids:
@@ -223,24 +241,27 @@ class SchedulerService:
             if not self._is_task_due(task, now):
                 continue
 
+            self._running_task_ids.add(task.task_id)
             background_task = asyncio.create_task(
                 self._execute_scheduled_task(task),
                 name=f"group-send-task-{task.task_id}",
             )
+            self._background_tasks.add(background_task)
             background_task.add_done_callback(
-                lambda done_task, task_name=task.task_name: (
-                    self._handle_background_task_done(
-                        done_task,
-                        f"群发任务: {task_name}",
-                    )
+                lambda done_task, task_name=task.task_name: self._on_scheduled_task_done(
+                    done_task,
+                    task_name,
                 )
             )
+            started_count += 1
 
-    def _handle_background_task_done(
-        self,
-        task: asyncio.Task,
-        task_name: str,
-    ) -> None:
+        return started_count
+
+    def _on_scheduled_task_done(self, task: asyncio.Task, task_name: str) -> None:
+        self._background_tasks.discard(task)
+        self._handle_background_task_done(task, f"群发任务: {task_name}")
+
+    def _handle_background_task_done(self, task: asyncio.Task, task_name: str) -> None:
         if task.cancelled():
             self._log("warning", f"{task_name} 已取消")
             return
@@ -254,11 +275,37 @@ class SchedulerService:
         if exception is not None:
             self._log("error", f"{task_name} 异常结束: {exception}")
 
+    async def _wait_for_next_scheduler_event(self, timeout_seconds: float | None) -> None:
+        if self._stop_event.is_set():
+            return
+
+        safe_timeout: float | None
+        if timeout_seconds is None:
+            safe_timeout = None
+        else:
+            safe_timeout = max(self.MIN_IDLE_SLEEP_SECONDS, float(timeout_seconds))
+
+        stop_waiter = asyncio.create_task(self._stop_event.wait())
+        wait_items: set[asyncio.Task] = {stop_waiter}
+        wait_items.update(task for task in self._background_tasks if not task.done())
+
+        try:
+            await asyncio.wait(
+                wait_items,
+                timeout=safe_timeout,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+        finally:
+            if not stop_waiter.done():
+                stop_waiter.cancel()
+
     async def _execute_scheduled_task(self, task: SendTaskConfig) -> None:
-        await self._execute_task(task)
+        try:
+            await self._execute_task(task)
+        finally:
+            self._running_task_ids.discard(task.task_id)
 
     async def _execute_task(self, task: SendTaskConfig) -> SendResult | None:
-        self._running_task_ids.add(task.task_id)
         last_result: SendResult | None = None
 
         try:
@@ -267,17 +314,11 @@ class SchedulerService:
                 groups = self._get_effective_task_groups(task)
 
                 if not account_names:
-                    self._log(
-                        "error",
-                        f"任务没有可用发送账号 | task={task.task_name}",
-                    )
+                    self._log("error", f"任务没有可用发送账号 | task={task.task_name}")
                     return None
 
                 if not groups:
-                    self._log(
-                        "error",
-                        f"任务没有可用目标群组 | task={task.task_name}",
-                    )
+                    self._log("error", f"任务没有可用目标群组 | task={task.task_name}")
                     return None
 
                 last_result = await self._execute_matrix_task(
@@ -289,7 +330,6 @@ class SchedulerService:
 
         finally:
             self._mark_task_finished(task)
-            self._running_task_ids.discard(task.task_id)
 
     async def _execute_matrix_task(
         self,
@@ -297,15 +337,8 @@ class SchedulerService:
         account_names: list[str],
         groups: list[GroupConfig],
     ) -> SendResult | None:
-        account_delay_min_ms, account_delay_max_ms = self._get_account_delay_range_ms(
-            task
-        )
+        account_delay_min_ms, account_delay_max_ms = self._get_account_delay_range_ms(task)
         group_delay_min_ms, group_delay_max_ms = self._get_group_delay_range_ms(task)
-        account_initial_delays_ms = self._build_account_initial_delays_ms(
-            account_count=len(account_names),
-            delay_min_ms=account_delay_min_ms,
-            delay_max_ms=account_delay_max_ms,
-        )
 
         self._log(
             "info",
@@ -316,69 +349,45 @@ class SchedulerService:
             f"max_concurrent_tasks={self._get_max_concurrent_tasks(self.settings)}",
         )
 
-        account_jobs: list[asyncio.Task] = []
+        all_results: list[SendResult] = []
 
-        for account_index, account_name in enumerate(account_names):
-            account_job = asyncio.create_task(
-                self._execute_account_group_pipeline(
-                    task=task,
-                    account_name=account_name,
-                    account_index=account_index,
-                    account_count=len(account_names),
-                    groups=groups,
-                    initial_delay_ms=account_initial_delays_ms[account_index],
-                    group_delay_min_ms=group_delay_min_ms,
-                    group_delay_max_ms=group_delay_max_ms,
-                ),
-                name=(
-                    f"group-send-matrix-{task.task_id}-"
-                    f"account-{account_index}"
-                ),
+        for account_position, account_name in enumerate(account_names):
+            if self._stop_event.is_set():
+                break
+
+            source_account_index = self._source_account_index(task, account_name)
+            account_results = await self._execute_account_group_pipeline(
+                task=task,
+                account_name=account_name,
+                account_index=source_account_index,
+                account_position=account_position,
+                account_count=len(account_names),
+                groups=groups,
+                group_delay_min_ms=group_delay_min_ms,
+                group_delay_max_ms=group_delay_max_ms,
             )
-            account_job.add_done_callback(
-                lambda done_task, task_name=task.task_name, account=account_name: (
-                    self._handle_background_task_done(
-                        done_task,
-                        f"多账号轮询任务: {task_name} / {account}",
-                    )
-                )
+            all_results.extend(account_results)
+
+            account_delay_ms = self._random_delay_ms(
+                account_delay_min_ms,
+                account_delay_max_ms,
             )
-            account_jobs.append(account_job)
+            self._apply_actual_account_delay(account_results, account_delay_ms)
+            await self._sleep_after_account(task, account_name, account_delay_ms)
 
-        if not account_jobs:
-            return None
-
-        collected_results = await asyncio.gather(
-            *account_jobs,
-            return_exceptions=True,
-        )
-
-        last_result: SendResult | None = None
         success_count = 0
         failed_count = 0
         skipped_count = 0
+        last_result: SendResult | None = None
 
-        for item in collected_results:
-            if isinstance(item, Exception):
+        for result in all_results:
+            last_result = result
+            if getattr(result, "status", "") == SEND_STATUS_SUCCESS:
+                success_count += 1
+            elif getattr(result, "status", "") == SEND_STATUS_SKIPPED:
+                skipped_count += 1
+            else:
                 failed_count += 1
-                self._log(
-                    "error",
-                    f"多账号轮询任务异常 | task={task.task_name} | error={item}",
-                )
-                continue
-
-            if not item:
-                continue
-
-            for result in item:
-                last_result = result
-
-                if getattr(result, "status", "") == SEND_STATUS_SUCCESS:
-                    success_count += 1
-                elif getattr(result, "status", "") == SEND_STATUS_SKIPPED:
-                    skipped_count += 1
-                else:
-                    failed_count += 1
 
         self._advance_indexes_after_batch(
             task=task,
@@ -400,115 +409,102 @@ class SchedulerService:
         task: SendTaskConfig,
         account_name: str,
         account_index: int,
+        account_position: int,
         account_count: int,
         groups: list[GroupConfig],
-        initial_delay_ms: int,
         group_delay_min_ms: int,
         group_delay_max_ms: int,
     ) -> list[SendResult]:
         results: list[SendResult] = []
-
-        if initial_delay_ms > 0:
-            self._log(
-                "info",
-                f"账号进入轮询前等待 {initial_delay_ms} 毫秒 | "
-                f"task={task.task_name} | account={account_name}",
-            )
-            await self._sleep_ms(initial_delay_ms)
 
         if self._stop_event.is_set():
             return results
 
         account = self._find_account(account_name)
         if account is None:
-            for group in groups:
+            self._log(
+                "error",
+                f"轮询账号不存在，已跳过该账号全部群组 | task={task.task_name} | account={account_name}",
+            )
+            for group_position, group in enumerate(groups):
                 result = self._build_failed_result(
                     task=task,
                     group=group,
                     account_name=account_name,
+                    account_index=account_index,
+                    group_index=self._source_group_index(task, group.group_id),
                     error=f"账号不存在: {account_name}",
                 )
                 self.task_log_service.append_result(result)
                 results.append(result)
-
-            self._log(
-                "error",
-                f"轮询账号不存在，已跳过该账号全部群组 | "
-                f"task={task.task_name} | account={account_name}",
-            )
+                group_delay_ms = self._random_delay_ms(group_delay_min_ms, group_delay_max_ms)
+                self._apply_actual_group_delay(result, group_delay_ms)
+                await self._sleep_after_group(task, account_name, group, group_delay_ms, group_position, len(groups))
             return results
 
         if not account.enabled:
-            for group in groups:
+            self._log(
+                "warning",
+                f"轮询账号未启用，已跳过该账号全部群组 | task={task.task_name} | account={account.account_name}",
+            )
+            for group_position, group in enumerate(groups):
                 result = self._build_failed_result(
                     task=task,
                     group=group,
                     account_name=account.account_name,
+                    account_index=account_index,
+                    group_index=self._source_group_index(task, group.group_id),
                     error=f"账号未启用: {account.account_name}",
                 )
                 self.task_log_service.append_result(result)
                 results.append(result)
-
-            self._log(
-                "warning",
-                f"轮询账号未启用，已跳过该账号全部群组 | "
-                f"task={task.task_name} | account={account.account_name}",
-            )
+                group_delay_ms = self._random_delay_ms(group_delay_min_ms, group_delay_max_ms)
+                self._apply_actual_group_delay(result, group_delay_ms)
+                await self._sleep_after_group(task, account.account_name, group, group_delay_ms, group_position, len(groups))
             return results
 
         try:
-            client = await self.client_manager.ensure_account_started(
-                account.account_name
-            )
+            client = await self.client_manager.ensure_account_started(account.account_name)
         except Exception as exc:
-            for group in groups:
+            self._log(
+                "error",
+                f"轮询账号启动失败，已跳过该账号全部群组 | task={task.task_name} | "
+                f"account={account.account_name} | error={exc}",
+            )
+            for group_position, group in enumerate(groups):
                 result = self._build_failed_result(
                     task=task,
                     group=group,
                     account_name=account.account_name,
+                    account_index=account_index,
+                    group_index=self._source_group_index(task, group.group_id),
                     error=f"账号启动失败: {exc}",
                 )
                 self.task_log_service.append_result(result)
                 results.append(result)
-
-            self._log(
-                "error",
-                f"轮询账号启动失败，已跳过该账号全部群组 | "
-                f"task={task.task_name} | account={account.account_name} | "
-                f"error={exc}",
-            )
+                group_delay_ms = self._random_delay_ms(group_delay_min_ms, group_delay_max_ms)
+                self._apply_actual_group_delay(result, group_delay_ms)
+                await self._sleep_after_group(task, account.account_name, group, group_delay_ms, group_position, len(groups))
             return results
 
-        for group_index, group in enumerate(groups):
+        for group_position, group in enumerate(groups):
             if self._stop_event.is_set():
                 return results
 
-            if group_index > 0:
-                delay_ms = self._random_delay_ms(
-                    group_delay_min_ms,
-                    group_delay_max_ms,
-                )
-                if delay_ms > 0:
-                    self._log(
-                        "info",
-                        f"账号切换下一个群组前等待 {delay_ms} 毫秒 | "
-                        f"task={task.task_name} | account={account.account_name} | "
-                        f"next_group={group.group_name}",
-                    )
-                    await self._sleep_ms(delay_ms)
-
-            task.account_name = account.account_name
-            task.group_id = group.group_id
-            task.current_account_index = account_index
-            task.current_group_index = group_index
+            group_index = self._source_group_index(task, group.group_id)
+            task_snapshot = self._build_task_snapshot(
+                task=task,
+                account_name=account.account_name,
+                group_id=group.group_id,
+                account_index=account_index,
+                group_index=group_index,
+            )
 
             self._log(
                 "info",
-                f"轮询发送 | task={task.task_name} | "
-                f"account={account.account_name} | "
-                f"account_index={account_index + 1}/{account_count} | "
-                f"group={group.group_name} | "
-                f"group_index={group_index + 1}/{len(groups)}",
+                f"轮询发送 | task={task.task_name} | account={account.account_name} | "
+                f"account_index={account_position + 1}/{account_count} | "
+                f"group={group.group_name} | group_index={group_position + 1}/{len(groups)}",
             )
 
             try:
@@ -516,36 +512,66 @@ class SchedulerService:
                     account_name=account.account_name,
                     client=client,
                     group=group,
-                    task=task,
+                    task=task_snapshot,
                     settings=self.settings,
                 )
             except Exception as exc:
                 result = self._build_failed_result(
-                    task=task,
+                    task=task_snapshot,
                     group=group,
                     account_name=account.account_name,
+                    account_index=account_index,
+                    group_index=group_index,
                     error=str(exc),
                 )
                 self._log(
                     "error",
-                    f"轮询发送异常 | task={task.task_name} | "
-                    f"account={account.account_name} | group={group.group_name} | "
-                    f"error={exc}",
+                    f"轮询发送异常 | task={task.task_name} | account={account.account_name} | "
+                    f"group={group.group_name} | error={exc}",
                 )
 
             self.task_log_service.append_result(result)
             results.append(result)
 
+            group_delay_ms = self._random_delay_ms(group_delay_min_ms, group_delay_max_ms)
+            self._apply_actual_group_delay(result, group_delay_ms)
+            await self._sleep_after_group(
+                task=task,
+                account_name=account.account_name,
+                group=group,
+                delay_ms=group_delay_ms,
+                group_position=group_position,
+                group_count=len(groups),
+            )
+
         return results
+
+    def _build_task_snapshot(
+        self,
+        task: SendTaskConfig,
+        account_name: str,
+        group_id: str,
+        account_index: int,
+        group_index: int,
+    ) -> SendTaskConfig:
+        return replace(
+            task,
+            account_name=account_name,
+            group_id=group_id,
+            current_account_index=account_index,
+            current_group_index=group_index,
+        )
 
     def _build_failed_result(
         self,
         task: SendTaskConfig,
         group: GroupConfig,
         account_name: str,
+        account_index: int,
+        group_index: int,
         error: str,
     ) -> SendResult:
-        now_text = datetime.now().isoformat(timespec="seconds")
+        now_text = self._iso_ms()
         account_names = self._get_task_account_names(task)
         group_ids = self._get_task_group_ids(task)
         template_ids = self._get_task_template_ids(task)
@@ -561,18 +587,12 @@ class SchedulerService:
             started_at=now_text,
             finished_at=now_text,
             rotate_mode=self._get_task_account_rotate_mode(task),
-            account_index=self._safe_int(
-                getattr(task, "current_account_index", 0),
-                0,
-            ),
+            account_index=account_index,
             selected_account_name=account_name,
             account_pool=account_names,
             account_pool_size=len(account_names),
             group_rotate_mode=self._get_task_group_rotate_mode(task),
-            group_index=self._safe_int(
-                getattr(task, "current_group_index", 0),
-                0,
-            ),
+            group_index=group_index,
             selected_group_id=str(getattr(group, "group_id", "") or ""),
             selected_group_name=str(getattr(group, "group_name", "") or ""),
             group_pool=group_ids,
@@ -590,25 +610,13 @@ class SchedulerService:
 
         if task.schedule_mode == SCHEDULE_MODE_DAILY:
             hour, minute = self._parse_daily_time(task.daily_time)
-            next_run = now.replace(
-                hour=hour,
-                minute=minute,
-                second=0,
-                microsecond=0,
-            )
-
+            next_run = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
             if next_run <= now:
                 next_run = next_run + timedelta(days=1)
+            return self._iso_ms(next_run)
 
-            return next_run.isoformat(timespec="seconds")
-
-        interval_ms = self._safe_non_negative_int(
-            getattr(task, "interval_ms", 3600000),
-            3600000,
-        )
-        return (now + timedelta(milliseconds=interval_ms)).isoformat(
-            timespec="seconds"
-        )
+        interval_ms = self._safe_non_negative_int(getattr(task, "interval_ms", 3600000), 3600000)
+        return self._iso_ms(now + timedelta(milliseconds=interval_ms))
 
     def _is_task_due(self, task: SendTaskConfig, now: datetime) -> bool:
         if task.schedule_mode not in {SCHEDULE_MODE_INTERVAL, SCHEDULE_MODE_DAILY}:
@@ -623,14 +631,14 @@ class SchedulerService:
                 except ValueError:
                     return False
 
-            task.next_run_at = now.isoformat(timespec="seconds")
+            task.next_run_at = self._iso_ms(now)
             self._save_tasks_safely()
             return True
 
         try:
             next_run_at = datetime.fromisoformat(task.next_run_at)
         except ValueError:
-            task.next_run_at = now.isoformat(timespec="seconds")
+            task.next_run_at = self._iso_ms(now)
             self._save_tasks_safely()
             return True
 
@@ -638,67 +646,85 @@ class SchedulerService:
 
     def _mark_task_finished(self, task: SendTaskConfig) -> None:
         now = datetime.now()
-        task.last_run_at = now.isoformat(timespec="seconds")
+        task.last_run_at = self._iso_ms(now)
         task.next_run_at = self.calculate_next_run(task, now)
         self._save_tasks_safely()
 
+    def _seconds_until_nearest_task(self, now: datetime) -> float | None:
+        nearest: datetime | None = None
+        changed = False
+
+        for task in list(self.tasks):
+            if not getattr(task, "enabled", True):
+                continue
+            if str(getattr(task, "task_id", "") or "") in self._running_task_ids:
+                continue
+
+            next_run_at = self._get_or_create_next_run_at(task, now)
+            if next_run_at is None:
+                continue
+
+            if nearest is None or next_run_at < nearest:
+                nearest = next_run_at
+
+            if not getattr(task, "next_run_at", ""):
+                changed = True
+
+        if changed:
+            self._save_tasks_safely()
+
+        if nearest is None:
+            return None
+
+        return max(0.0, (nearest - now).total_seconds())
+
+    def _get_or_create_next_run_at(self, task: SendTaskConfig, now: datetime) -> datetime | None:
+        if not getattr(task, "next_run_at", ""):
+            if task.schedule_mode == SCHEDULE_MODE_DAILY:
+                task.next_run_at = self.calculate_next_run(task, now)
+            else:
+                task.next_run_at = self._iso_ms(now)
+
+        try:
+            return datetime.fromisoformat(task.next_run_at)
+        except ValueError:
+            task.next_run_at = self._iso_ms(now)
+            return now
+
     def _get_effective_task_account_names(self, task: SendTaskConfig) -> list[str]:
         account_names = self._get_task_account_names(task)
-
         if not account_names:
             return []
 
         account_rotate_mode = self._get_task_account_rotate_mode(task)
-
         if account_rotate_mode == ACCOUNT_ROTATE_MODE_SINGLE:
-            selected_account_name = account_names[0]
-            task.account_name = selected_account_name
-            task.account_names = [selected_account_name]
-            return [selected_account_name]
+            return [account_names[0]]
 
-        start_index = self._normalize_current_account_index(
-            task=task,
-            account_count=len(account_names),
-        )
-        rotated_account_names = account_names[start_index:] + account_names[:start_index]
-        task.account_name = rotated_account_names[0]
-        return rotated_account_names
+        start_index = self._normalize_current_account_index(task=task, account_count=len(account_names))
+        return account_names[start_index:] + account_names[:start_index]
 
     def _get_effective_task_groups(self, task: SendTaskConfig) -> list[GroupConfig]:
         group_ids = self._get_task_group_ids(task)
-
         if not group_ids:
             return []
 
         group_rotate_mode = self._get_task_group_rotate_mode(task)
-
         if group_rotate_mode == GROUP_ROTATE_MODE_ROUND_ROBIN:
-            start_index = self._normalize_current_group_index(
-                task=task,
-                group_count=len(group_ids),
-            )
+            start_index = self._normalize_current_group_index(task=task, group_count=len(group_ids))
             group_ids = group_ids[start_index:] + group_ids[:start_index]
         else:
             group_ids = group_ids[:1]
 
         groups: list[GroupConfig] = []
-
         for group_id in group_ids:
             group = self._find_group(group_id)
-
             if group is None:
                 self._log(
                     "error",
-                    f"任务目标群不存在，已跳过 | "
-                    f"task={task.task_name} | group_id={group_id}",
+                    f"任务目标群不存在，已跳过 | task={task.task_name} | group_id={group_id}",
                 )
                 continue
-
             groups.append(group)
-
-        if groups:
-            task.group_id = groups[0].group_id
-
         return groups
 
     def _get_task_account_names(self, task: SendTaskConfig) -> list[str]:
@@ -711,15 +737,8 @@ class SchedulerService:
                 account_names.append(account_name)
 
         legacy_account_name = str(getattr(task, "account_name", "") or "").strip()
-
         if legacy_account_name and legacy_account_name not in account_names:
             account_names.insert(0, legacy_account_name)
-
-        if not legacy_account_name and account_names:
-            task.account_name = account_names[0]
-
-        task.account_names = account_names
-
         return account_names
 
     def _get_task_group_ids(self, task: SendTaskConfig) -> list[str]:
@@ -732,15 +751,8 @@ class SchedulerService:
                 group_ids.append(group_id)
 
         legacy_group_id = str(getattr(task, "group_id", "") or "").strip()
-
         if legacy_group_id and legacy_group_id not in group_ids:
             group_ids.insert(0, legacy_group_id)
-
-        if not legacy_group_id and group_ids:
-            task.group_id = group_ids[0]
-
-        task.group_ids = group_ids
-
         return group_ids
 
     def _get_task_template_ids(self, task: SendTaskConfig) -> list[str]:
@@ -753,88 +765,67 @@ class SchedulerService:
                 template_ids.append(template_id)
 
         legacy_template_id = str(getattr(task, "template_id", "") or "").strip()
-
         if legacy_template_id and legacy_template_id not in template_ids:
             template_ids.insert(0, legacy_template_id)
-
-        if not legacy_template_id and template_ids:
-            task.template_id = template_ids[0]
-
-        task.template_ids = template_ids
-
         return template_ids
 
     @staticmethod
     def _get_task_account_rotate_mode(task: SendTaskConfig) -> str:
-        rotate_mode = str(
-            getattr(task, "account_rotate_mode", ACCOUNT_ROTATE_MODE_SINGLE) or ""
-        ).strip()
-
-        if rotate_mode not in {
-            ACCOUNT_ROTATE_MODE_SINGLE,
-            ACCOUNT_ROTATE_MODE_ROUND_ROBIN,
-        }:
+        rotate_mode = str(getattr(task, "account_rotate_mode", ACCOUNT_ROTATE_MODE_SINGLE) or "").strip()
+        if rotate_mode not in {ACCOUNT_ROTATE_MODE_SINGLE, ACCOUNT_ROTATE_MODE_ROUND_ROBIN}:
             return ACCOUNT_ROTATE_MODE_SINGLE
-
         return rotate_mode
 
     @staticmethod
     def _get_task_group_rotate_mode(task: SendTaskConfig) -> str:
-        rotate_mode = str(
-            getattr(task, "group_rotate_mode", GROUP_ROTATE_MODE_SINGLE) or ""
-        ).strip()
-
-        if rotate_mode not in {
-            GROUP_ROTATE_MODE_SINGLE,
-            GROUP_ROTATE_MODE_ROUND_ROBIN,
-        }:
+        rotate_mode = str(getattr(task, "group_rotate_mode", GROUP_ROTATE_MODE_SINGLE) or "").strip()
+        if rotate_mode not in {GROUP_ROTATE_MODE_SINGLE, GROUP_ROTATE_MODE_ROUND_ROBIN}:
             return GROUP_ROTATE_MODE_SINGLE
-
         return rotate_mode
 
-    def _normalize_current_account_index(
-        self,
-        task: SendTaskConfig,
-        account_count: int,
-    ) -> int:
+    def _normalize_current_account_index(self, task: SendTaskConfig, account_count: int) -> int:
         if account_count <= 0:
             task.current_account_index = 0
             return 0
 
-        current_index = self._safe_int(
-            getattr(task, "current_account_index", 0),
-            0,
-        )
-
+        current_index = self._safe_int(getattr(task, "current_account_index", 0), 0)
         if current_index < 0:
             current_index = 0
-
         current_index = current_index % account_count
         task.current_account_index = current_index
-
         return current_index
 
-    def _normalize_current_group_index(
-        self,
-        task: SendTaskConfig,
-        group_count: int,
-    ) -> int:
+    def _normalize_current_group_index(self, task: SendTaskConfig, group_count: int) -> int:
         if group_count <= 0:
             task.current_group_index = 0
             return 0
 
-        current_index = self._safe_int(
-            getattr(task, "current_group_index", 0),
-            0,
-        )
-
+        current_index = self._safe_int(getattr(task, "current_group_index", 0), 0)
         if current_index < 0:
             current_index = 0
-
         current_index = current_index % group_count
         task.current_group_index = current_index
-
         return current_index
+
+    def _source_account_index(self, task: SendTaskConfig, account_name: str) -> int:
+        account_names = self._get_task_account_names(task)
+        if not account_names:
+            return 0
+
+        selected = str(account_name or "").strip()
+        if selected in account_names:
+            return account_names.index(selected)
+        return self._normalize_current_account_index(task, len(account_names))
+
+    def _source_group_index(self, task: SendTaskConfig, group_id: str) -> int:
+        group_ids = self._get_task_group_ids(task)
+        if not group_ids:
+            return 0
+
+        selected = str(group_id or "").strip()
+        if selected in group_ids:
+            return group_ids.index(selected)
+        return self._normalize_current_group_index(task, len(group_ids))
 
     def _advance_indexes_after_batch(
         self,
@@ -861,77 +852,93 @@ class SchedulerService:
             task.current_group_index = 0
 
     def _get_account_delay_range_ms(self, task: SendTaskConfig) -> tuple[int, int]:
-        min_ms = self._safe_non_negative_int(
-            getattr(task, "account_delay_min_ms", 0),
-            0,
-        )
-        max_ms = self._safe_non_negative_int(
-            getattr(task, "account_delay_max_ms", min_ms),
-            min_ms,
-        )
-
+        min_ms = self._safe_non_negative_int(getattr(task, "account_delay_min_ms", 0), 0)
+        max_ms = self._safe_non_negative_int(getattr(task, "account_delay_max_ms", min_ms), min_ms)
         if max_ms < min_ms:
             max_ms = min_ms
-
         return min_ms, max_ms
 
     def _get_group_delay_range_ms(self, task: SendTaskConfig) -> tuple[int, int]:
-        min_ms = self._safe_non_negative_int(
-            getattr(task, "group_delay_min_ms", 0),
-            0,
-        )
-        max_ms = self._safe_non_negative_int(
-            getattr(task, "group_delay_max_ms", min_ms),
-            min_ms,
-        )
-
+        min_ms = self._safe_non_negative_int(getattr(task, "group_delay_min_ms", 0), 0)
+        max_ms = self._safe_non_negative_int(getattr(task, "group_delay_max_ms", min_ms), min_ms)
         if max_ms < min_ms:
             max_ms = min_ms
-
         return min_ms, max_ms
-
-    def _build_account_initial_delays_ms(
-        self,
-        account_count: int,
-        delay_min_ms: int,
-        delay_max_ms: int,
-    ) -> list[int]:
-        if account_count <= 0:
-            return []
-
-        delays = [0]
-        total_delay_ms = 0
-
-        for _index in range(1, account_count):
-            total_delay_ms += self._random_delay_ms(delay_min_ms, delay_max_ms)
-            delays.append(total_delay_ms)
-
-        return delays
 
     @staticmethod
     def _random_delay_ms(delay_min_ms: int, delay_max_ms: int) -> int:
         safe_min = max(0, int(delay_min_ms or 0))
         safe_max = max(0, int(delay_max_ms or 0))
-
         if safe_max < safe_min:
             safe_max = safe_min
-
         if safe_max <= 0:
             return 0
-
         return random.randint(safe_min, safe_max)
 
-    @staticmethod
-    async def _sleep_ms(delay_ms: int) -> None:
-        if delay_ms <= 0:
+    async def _sleep_after_group(
+        self,
+        task: SendTaskConfig,
+        account_name: str,
+        group: GroupConfig,
+        delay_ms: int,
+        group_position: int,
+        group_count: int,
+    ) -> None:
+        if delay_ms > 0:
+            self._log(
+                "info",
+                f"群组发送动作后等待 {delay_ms} 毫秒 | task={task.task_name} | "
+                f"account={account_name} | group={group.group_name} | "
+                f"group_index={group_position + 1}/{group_count}",
+            )
+        await self._sleep_ms(delay_ms)
+
+    async def _sleep_after_account(
+        self,
+        task: SendTaskConfig,
+        account_name: str,
+        delay_ms: int,
+    ) -> None:
+        if delay_ms > 0:
+            self._log(
+                "info",
+                f"账号群组流程结束后等待 {delay_ms} 毫秒 | task={task.task_name} | account={account_name}",
+            )
+        await self._sleep_ms(delay_ms)
+
+    async def _sleep_ms(self, delay_ms: int) -> None:
+        safe_delay_ms = max(0, int(delay_ms or 0))
+        if safe_delay_ms <= 0:
+            await asyncio.sleep(0)
             return
 
-        await asyncio.sleep(delay_ms / 1000)
+        deadline = datetime.now() + timedelta(milliseconds=safe_delay_ms)
+        while not self._stop_event.is_set():
+            remaining_seconds = (deadline - datetime.now()).total_seconds()
+            if remaining_seconds <= 0:
+                return
+
+            timeout_seconds = min(self.INTERRUPTIBLE_SLEEP_SLICE_SECONDS, remaining_seconds)
+            try:
+                await asyncio.wait_for(self._stop_event.wait(), timeout=timeout_seconds)
+                return
+            except asyncio.TimeoutError:
+                continue
+
+    @staticmethod
+    def _apply_actual_group_delay(result: SendResult | None, delay_ms: int) -> None:
+        if result is not None:
+            setattr(result, "actual_group_delay_ms", max(0, int(delay_ms or 0)))
+
+    @staticmethod
+    def _apply_actual_account_delay(results: list[SendResult], delay_ms: int) -> None:
+        safe_delay_ms = max(0, int(delay_ms or 0))
+        for result in results:
+            setattr(result, "actual_account_delay_ms", safe_delay_ms)
 
     @staticmethod
     def _parse_daily_time(daily_time: str) -> tuple[int, int]:
         raw_text = (daily_time or "09:00").strip()
-
         try:
             hour_text, minute_text = raw_text.split(":", 1)
             hour = int(hour_text)
@@ -941,25 +948,23 @@ class SchedulerService:
 
         if hour < 0 or hour > 23:
             hour = 9
-
         if minute < 0 or minute > 59:
             minute = 0
-
         return hour, minute
 
     def _find_account(self, account_name: str) -> AccountConfig | None:
+        safe_account_name = str(account_name or "").strip()
         return next(
             (
                 account
                 for account in self.accounts
-                if account.account_name == account_name
+                if str(account.account_name or "").strip() == safe_account_name
             ),
             None,
         )
 
     def _find_group(self, group_id: str) -> GroupConfig | None:
         safe_group_id = str(group_id or "").strip()
-
         return next(
             (
                 group
