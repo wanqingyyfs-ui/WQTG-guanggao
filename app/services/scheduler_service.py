@@ -39,6 +39,8 @@ class SchedulerService:
     - 调度等待和延迟等待都能响应停止。
     - 并发执行中不通过长期修改共享 task 对象决定本次账号、群组、模板。
     - 写入任务日志前先写入本次真实 group/account 实际延迟。
+    - 多账号多群组时使用账号级流水线并发：
+      A1 发 G2 时，A2 可以同步开始发 G1。
     """
 
     MIN_IDLE_SLEEP_SECONDS = 0.05
@@ -338,6 +340,228 @@ class SchedulerService:
         account_names: list[str],
         groups: list[GroupConfig],
     ) -> SendResult | None:
+        if len(account_names) <= 1 or len(groups) <= 1:
+            return await self._execute_serial_matrix_task(
+                task=task,
+                account_names=account_names,
+                groups=groups,
+            )
+
+        return await self._execute_pipeline_matrix_task(
+            task=task,
+            account_names=account_names,
+            groups=groups,
+        )
+
+    async def _execute_pipeline_matrix_task(
+        self,
+        task: SendTaskConfig,
+        account_names: list[str],
+        groups: list[GroupConfig],
+    ) -> SendResult | None:
+        account_delay_min_ms, account_delay_max_ms = self._get_account_delay_range_ms(task)
+        group_delay_min_ms, group_delay_max_ms = self._get_group_delay_range_ms(task)
+
+        account_start_offsets_ms: list[int] = []
+        current_offset_ms = 0
+
+        for account_position, _account_name in enumerate(account_names):
+            if account_position <= 0:
+                account_start_offsets_ms.append(0)
+                continue
+
+            current_offset_ms += self._random_delay_ms(
+                account_delay_min_ms,
+                account_delay_max_ms,
+            )
+            account_start_offsets_ms.append(current_offset_ms)
+
+        self._log(
+            "info",
+            f"开始多账号多群组流水线并发任务 | task={task.task_name} | "
+            f"accounts={len(account_names)} | groups={len(groups)} | "
+            f"account_delay={account_delay_min_ms}-{account_delay_max_ms}ms | "
+            f"group_delay={group_delay_min_ms}-{group_delay_max_ms}ms | "
+            f"max_concurrent_tasks={self._get_max_concurrent_tasks(self.settings)}",
+        )
+
+        worker_tasks: list[asyncio.Task] = []
+
+        for account_position, account_name in enumerate(account_names):
+            worker_task = asyncio.create_task(
+                self._execute_account_pipeline(
+                    task=task,
+                    account_name=account_name,
+                    account_position=account_position,
+                    account_count=len(account_names),
+                    account_start_delay_ms=account_start_offsets_ms[account_position],
+                    account_names=account_names,
+                    groups=groups,
+                    group_delay_min_ms=group_delay_min_ms,
+                    group_delay_max_ms=group_delay_max_ms,
+                ),
+                name=f"group-send-pipeline-{task.task_id}-{account_position + 1}",
+            )
+            worker_tasks.append(worker_task)
+
+        gathered_results = await asyncio.gather(
+            *worker_tasks,
+            return_exceptions=True,
+        )
+
+        all_results: list[SendResult] = []
+
+        for gathered_result in gathered_results:
+            if isinstance(gathered_result, BaseException):
+                self._log(
+                    "error",
+                    f"多账号多群组流水线账号任务异常 | task={task.task_name} | "
+                    f"error={gathered_result}",
+                )
+                continue
+
+            all_results.extend(gathered_result)
+
+        success_count = 0
+        failed_count = 0
+        skipped_count = 0
+
+        for result in all_results:
+            if getattr(result, "status", "") == SEND_STATUS_SUCCESS:
+                success_count += 1
+            elif getattr(result, "status", "") == SEND_STATUS_SKIPPED:
+                skipped_count += 1
+            else:
+                failed_count += 1
+
+        self._advance_indexes_after_batch(
+            task=task,
+            account_count=len(account_names),
+            group_count=len(groups),
+        )
+        self._save_tasks_safely()
+
+        self._log(
+            "info",
+            f"多账号多群组流水线并发任务结束 | task={task.task_name} | "
+            f"success={success_count} | failed={failed_count} | skipped={skipped_count}",
+        )
+
+        if not all_results:
+            return None
+
+        return max(
+            all_results,
+            key=lambda result: str(
+                getattr(result, "finished_at", "")
+                or getattr(result, "started_at", "")
+                or ""
+            ),
+        )
+
+    async def _execute_account_pipeline(
+        self,
+        task: SendTaskConfig,
+        account_name: str,
+        account_position: int,
+        account_count: int,
+        account_start_delay_ms: int,
+        account_names: list[str],
+        groups: list[GroupConfig],
+        group_delay_min_ms: int,
+        group_delay_max_ms: int,
+    ) -> list[SendResult]:
+        results: list[SendResult] = []
+
+        await self._sleep_before_pipeline_account(
+            task=task,
+            account_name=account_name,
+            account_position=account_position,
+            account_count=account_count,
+            delay_ms=account_start_delay_ms,
+        )
+
+        for group_position, group in enumerate(groups):
+            if self._stop_event.is_set():
+                break
+
+            result = await self._execute_sequence_item(
+                task=task,
+                account_name=account_name,
+                group=group,
+                account_names=account_names,
+                groups=groups,
+                sequence_position=group_position,
+                sequence_count=len(groups),
+            )
+
+            group_delay_ms = self._random_delay_ms(
+                group_delay_min_ms,
+                group_delay_max_ms,
+            )
+
+            self._apply_actual_transition_delay(
+                result=result,
+                account_delay_ms=account_start_delay_ms if group_position == 0 else 0,
+                group_delay_ms=group_delay_ms,
+            )
+
+            self.task_log_service.append_result(result)
+            results.append(result)
+
+            await self._sleep_after_pipeline_group(
+                task=task,
+                account_name=account_name,
+                group=group,
+                delay_ms=group_delay_ms,
+                group_position=group_position,
+                group_count=len(groups),
+            )
+
+        return results
+
+    async def _sleep_before_pipeline_account(
+        self,
+        task: SendTaskConfig,
+        account_name: str,
+        account_position: int,
+        account_count: int,
+        delay_ms: int,
+    ) -> None:
+        if delay_ms > 0:
+            self._log(
+                "info",
+                f"账号流水线启动等待 {delay_ms} 毫秒 | task={task.task_name} | "
+                f"account={account_name} | account_index={account_position + 1}/{account_count}",
+            )
+
+        await self._sleep_ms(delay_ms)
+
+    async def _sleep_after_pipeline_group(
+        self,
+        task: SendTaskConfig,
+        account_name: str,
+        group: GroupConfig,
+        delay_ms: int,
+        group_position: int,
+        group_count: int,
+    ) -> None:
+        if delay_ms > 0:
+            self._log(
+                "info",
+                f"账号流水线群组发送后等待 {delay_ms} 毫秒 | task={task.task_name} | "
+                f"account={account_name} | group={group.group_name} | "
+                f"group_index={group_position + 1}/{group_count}",
+            )
+
+        await self._sleep_ms(delay_ms)
+
+    async def _execute_serial_matrix_task(
+        self,
+        task: SendTaskConfig,
+        account_names: list[str],
+        groups: list[GroupConfig],
+    ) -> SendResult | None:
         account_delay_min_ms, account_delay_max_ms = self._get_account_delay_range_ms(task)
         group_delay_min_ms, group_delay_max_ms = self._get_group_delay_range_ms(task)
 
@@ -587,8 +811,6 @@ class SchedulerService:
     ) -> tuple[int, int]:
         next_position = position + 1
         if next_position >= len(sequence):
-            # 一轮最后一次动作后，仍然执行群组延迟，然后才进入任务间隔时间。
-            # 例如：A1 -账号延迟- B1 -群组延迟- A2 -账号延迟- B2 -群组延迟- 间隔时间- A1。
             return 0, self._random_delay_ms(group_delay_min_ms, group_delay_max_ms)
 
         account_name, group = sequence[position]
@@ -814,8 +1036,6 @@ class SchedulerService:
             task.current_account_index = 0
             return [account_names[0]]
 
-        # 最终规则：每个任务回合都必须从任务账号池第一个账号开始，不能用 current_account_index 轮换起点。
-        # 这样 AB + 12 在群组延迟更高时，每一回合都固定是 A1、B1、A2、B2。
         task.current_account_index = 0
         return account_names
 
@@ -826,8 +1046,6 @@ class SchedulerService:
 
         group_rotate_mode = self._get_task_group_rotate_mode(task)
         if group_rotate_mode == GROUP_ROTATE_MODE_ROUND_ROBIN:
-            # 最终规则：每个任务回合都必须从任务群组池第一个群开始，不能用 current_group_index 轮换起点。
-            # 这样新回合不会从群 2 或其它位置开始。
             task.current_group_index = 0
         else:
             task.current_group_index = 0
@@ -951,9 +1169,6 @@ class SchedulerService:
         account_count: int,
         group_count: int,
     ) -> None:
-        # 最终规则：任务池顺序只由账号/群组列表本身决定。
-        # 每一轮结束后都重置索引，下一轮固定从账号池第一个账号、群组池第一个群开始。
-        # 不能再把 current_account_index/current_group_index 加 1，否则下一轮会变成 B1、A1、B2、A2。
         task.current_account_index = 0
         task.current_group_index = 0
 
