@@ -32,6 +32,18 @@ sessions/
 config/
 data/
 
+# tgapipldc runtime data inside vendor
+app/vendor/tgapipldc/data/*
+app/vendor/tgapipldc/csv/*
+app/vendor/tgapipldc/logs/*
+app/vendor/tgapipldc/profiles/*
+
+# Keep empty runtime folders if you create .gitkeep files
+!app/vendor/tgapipldc/data/.gitkeep
+!app/vendor/tgapipldc/csv/.gitkeep
+!app/vendor/tgapipldc/logs/.gitkeep
+!app/vendor/tgapipldc/profiles/.gitkeep
+
 # Local app data backup folders
 万青TG群发任务/
 .tg_group_sender/
