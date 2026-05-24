@@ -5,7 +5,7 @@ import concurrent.futures
 import logging
 import threading
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from PySide6.QtCore import QObject, Signal
 
@@ -19,6 +19,12 @@ from app.services.scheduler_service import SchedulerService
 from app.services.task_log_service import TaskLogService
 from app.services.template_service import TemplateSender
 from app.services.template_store_service import TemplateStoreService
+from app.services.tgapipldc_account_bind_service import TgapipldcAccountBindService
+from app.services.tgapipldc_import_service import TgapipldcImportService
+from app.services.tgapipldc_proxy_service import TgapipldcProxyService
+from app.services.tgapipldc_runner_service import TgapipldcRunnerService
+from app.services.tgapipldc_workspace_service import TgapipldcWorkspaceService
+from app.services.yanzheng_login_provider import YanzhengLoginInputProvider
 
 
 SCHEDULER_STOP_MESSAGE = "请先停止群发功能"
@@ -60,6 +66,8 @@ RUNTIME_SAFE_SETTING_FIELDS = (
     }
 )
 
+TgapipldcBackgroundCallable = Callable[[], None]
+
 
 class GuiLoginInputProvider(QObject):
     code_input_required = Signal(str, str, object)
@@ -83,6 +91,9 @@ class RuntimeService(QObject):
     templates_changed = Signal()
     noise_pool_changed = Signal()
     scheduler_status_changed = Signal(str)
+
+    tgapipldc_log_received = Signal(str)
+    tgapipldc_process_status_changed = Signal(bool)
 
     def __init__(self, base_dir: str = "."):
         super().__init__()
@@ -141,6 +152,23 @@ class RuntimeService(QObject):
             log_func=self._emit_log,
         )
 
+        self.tgapipldc_workspace_service = TgapipldcWorkspaceService()
+        self.tgapipldc_workspace_service.ensure_structure()
+        self.tgapipldc_proxy_service = TgapipldcProxyService(
+            workspace_service=self.tgapipldc_workspace_service,
+        )
+        self.tgapipldc_account_bind_service = TgapipldcAccountBindService(
+            workspace_service=self.tgapipldc_workspace_service,
+        )
+        self.tgapipldc_runner_service = TgapipldcRunnerService(
+            workspace_service=self.tgapipldc_workspace_service,
+        )
+        self.tgapipldc_import_service = TgapipldcImportService(
+            workspace_service=self.tgapipldc_workspace_service,
+        )
+        self._tgapipldc_thread: threading.Thread | None = None
+        self._tgapipldc_thread_lock = threading.Lock()
+
         self._thread: threading.Thread | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._manager: TelegramClientManager | None = None
@@ -191,6 +219,16 @@ class RuntimeService(QObject):
             log_method = getattr(self.logger, safe_level.lower(), self.logger.info)
             log_method(safe_message)
 
+    def _emit_tgapipldc_log(self, message: str) -> None:
+        safe_message = str(message or "")
+        if not safe_message:
+            return
+
+        self.tgapipldc_log_received.emit(safe_message)
+
+        if hasattr(self, "logger") and self.logger is not None:
+            self.logger.info(f"[tgapipldc] {safe_message}")
+
     def _emit_status(self, account_name: str, status: str, detail: str) -> None:
         safe_account_name = str(account_name or "")
         safe_status = str(status or "")
@@ -229,6 +267,162 @@ class RuntimeService(QObject):
 
     def get_logs_dir(self) -> Path:
         return self.config_service.logs_dir
+
+    def get_tgapipldc_workspace_dir(self) -> Path:
+        self.tgapipldc_workspace_service.ensure_structure()
+        return self.tgapipldc_workspace_service.workspace_dir
+
+    def read_tgapipldc_accounts_csv_text(self) -> str:
+        return self.tgapipldc_workspace_service.read_accounts_csv_text()
+
+    def read_tgapipldc_proxies_csv_text(self) -> str:
+        return self.tgapipldc_workspace_service.read_proxies_csv_text()
+
+    def overwrite_tgapipldc_accounts_csv(self, raw_text: str) -> None:
+        result = self.tgapipldc_workspace_service.overwrite_accounts_csv_data(raw_text)
+        self._emit_tgapipldc_log(
+            f"accounts.csv 已覆盖：{result.path}，写入 {result.row_count} 行数据"
+        )
+
+    def overwrite_tgapipldc_proxies_csv(self, raw_text: str) -> None:
+        result = self.tgapipldc_workspace_service.overwrite_proxies_csv_data(raw_text)
+        self._emit_tgapipldc_log(
+            f"proxies.csv 已覆盖：{result.path}，写入 {result.row_count} 行数据"
+        )
+
+    def is_tgapipldc_process_running(self) -> bool:
+        with self._tgapipldc_thread_lock:
+            thread_running = bool(
+                self._tgapipldc_thread is not None
+                and self._tgapipldc_thread.is_alive()
+            )
+        return thread_running or self.tgapipldc_runner_service.is_running()
+
+    def run_tgapipldc_test_proxies(self) -> None:
+        def task() -> None:
+            summary = self.tgapipldc_proxy_service.test_proxies(
+                progress_callback=self._emit_tgapipldc_log,
+            )
+            self._emit_tgapipldc_log(
+                "代理检测完成："
+                f"总数 {summary.total}，"
+                f"可用 {summary.ok_count}，"
+                f"重复 IP {summary.duplicate_ip_count}，"
+                f"不可用 {summary.bad_count}，"
+                f"解析失败 {summary.parse_failed_count}，"
+                f"结果文件 {summary.result_path}"
+            )
+
+        self._run_tgapipldc_background("检测代理", task)
+
+    def run_tgapipldc_build_proxy_pool(self) -> None:
+        def task() -> None:
+            summary = self.tgapipldc_proxy_service.build_proxy_pool()
+            self._emit_tgapipldc_log(
+                f"可用代理池已生成：{summary.output_path}，可用代理 {summary.usable_count} 条"
+            )
+
+        self._run_tgapipldc_background("构建可用代理池", task)
+
+    def run_tgapipldc_assign_proxies(self) -> None:
+        def task() -> None:
+            result = self.tgapipldc_account_bind_service.assign_accounts_to_proxies()
+            self._emit_tgapipldc_log(
+                "账号代理绑定完成："
+                f"待绑定账号 {result.account_count} 个，"
+                f"可用代理 {result.proxy_count} 个，"
+                f"实际绑定 {result.assigned_count} 个，"
+                f"输出文件 {result.account_proxy_map_path}"
+            )
+
+        self._run_tgapipldc_background("绑定账号和代理", task)
+
+    def run_tgapipldc_export_api(self) -> None:
+        def task() -> None:
+            result = self.tgapipldc_runner_service.run_login_telegram_web(
+                log_callback=self._emit_tgapipldc_log,
+            )
+            if not result.success:
+                raise RuntimeError(f"批量获取 API 失败，退出码：{result.return_code}")
+
+        self._run_tgapipldc_background("批量获取 api_id/api_hash", task)
+
+    def run_tgapipldc_import_api_to_wqtg(self) -> None:
+        self.ensure_can_modify_sending_data()
+        result = self.tgapipldc_import_service.import_accounts(self.accounts)
+        self.save_accounts(result.accounts)
+        self.reload_config_cache()
+        self._emit_tgapipldc_log(
+            "API 导入 WQTG 完成："
+            f"新增 {result.created_count} 个，"
+            f"更新 {result.updated_count} 个，"
+            f"跳过 {result.skipped_count} 个，"
+            f"来源 {result.api_csv_path}"
+        )
+
+    def run_tgapipldc_login_wqtg_accounts(self) -> None:
+        self.reload_config_cache()
+        provider = YanzhengLoginInputProvider(
+            workspace_service=self.tgapipldc_workspace_service,
+            log_func=self._emit_tgapipldc_log,
+        )
+        manager = self._get_manager()
+        self._submit_coroutine(
+            self._login_wqtg_accounts_with_yanzheng(manager, provider)
+        )
+
+    async def _login_wqtg_accounts_with_yanzheng(self, manager, provider) -> None:
+        accounts = [account for account in self.accounts if bool(getattr(account, "enabled", True))]
+        total = len(accounts)
+        self.tgapipldc_process_status_changed.emit(True)
+        self._emit_tgapipldc_log(f"WQTG 批量登录开始：共 {total} 个启用账号")
+        try:
+            for index, account in enumerate(accounts, start=1):
+                account_name = str(getattr(account, "account_name", "") or "").strip()
+                self._emit_tgapipldc_log(f"[{index}/{total}] 开始登录 WQTG 账号：{account_name}")
+                try:
+                    await manager.login_account(account_name, input_provider=provider)
+                    self._emit_tgapipldc_log(f"[{index}/{total}] WQTG 账号登录完成：{account_name}")
+                except Exception as exc:
+                    self._emit_tgapipldc_log(f"[{index}/{total}] WQTG 账号登录失败：{account_name}，原因：{exc}")
+            self._emit_tgapipldc_log("WQTG 批量登录流程结束")
+        finally:
+            self.tgapipldc_process_status_changed.emit(False)
+
+
+    def stop_tgapipldc_process(self) -> None:
+        self.tgapipldc_runner_service.stop_current_process()
+        self._emit_tgapipldc_log("已请求停止当前 tgapipldc 流程")
+
+    def _run_tgapipldc_background(
+        self,
+        title: str,
+        target: TgapipldcBackgroundCallable,
+    ) -> None:
+        if self.is_tgapipldc_process_running():
+            raise RuntimeError("已有 tgapipldc 流程正在运行，请先停止或等待完成")
+
+        def worker() -> None:
+            self.tgapipldc_process_status_changed.emit(True)
+            self._emit_tgapipldc_log(f"{title}：开始")
+            try:
+                target()
+                self._emit_tgapipldc_log(f"{title}：完成")
+            except Exception as exc:
+                self._emit_tgapipldc_log(f"{title}：失败：{exc}")
+            finally:
+                self.tgapipldc_process_status_changed.emit(False)
+
+        thread = threading.Thread(
+            target=worker,
+            name=f"tgapipldc-{title}",
+            daemon=True,
+        )
+
+        with self._tgapipldc_thread_lock:
+            self._tgapipldc_thread = thread
+
+        thread.start()
 
     def reload_config_cache(self) -> None:
         (
@@ -611,6 +805,11 @@ class RuntimeService(QObject):
         return manager.get_running_client(account_name)
 
     def shutdown(self) -> None:
+        try:
+            self.stop_tgapipldc_process()
+        except Exception as exc:
+            self._emit_log("warning", f"停止 tgapipldc 流程时出现异常: {exc}")
+
         loop = self._loop
 
         if loop is not None and not loop.is_closed() and self._scheduler is not None:

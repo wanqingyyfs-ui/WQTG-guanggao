@@ -1,0 +1,6 @@
+2026/05/24-22:25:09.398 b60 Creating DB E:\WQTG-guanggao\app\vendor\tgapipldc\profiles\15027685113\Default\IndexedDB\https_web.telegram.org_0.indexeddb.leveldb since it was missing.
+2026/05/24-22:25:09.404 b60 Reusing MANIFEST E:\WQTG-guanggao\app\vendor\tgapipldc\profiles\15027685113\Default\IndexedDB\https_web.telegram.org_0.indexeddb.leveldb/MANIFEST-000001
+2026/05/24-22:25:16.651 b60 Level-0 table #5: started
+2026/05/24-22:25:16.655 b60 Level-0 table #5: 22656 bytes OK
+2026/05/24-22:25:16.658 b60 Delete type=0 #3
+2026/05/24-22:25:16.658 b60 Manual compaction at level-0 from '\x00\x03\x00\x00\x00' @ 72057594037927935 : 1 .. '\x00\x04\x00\x00\x00' @ 0 : 0; will stop at (end)
