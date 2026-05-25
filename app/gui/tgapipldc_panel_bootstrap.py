@@ -1,12 +1,28 @@
 from __future__ import annotations
 
+from PySide6.QtCore import QUrl
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QMessageBox
+
+
+PROFILE_MAINTENANCE_ACTION_NAMES = {
+    "status": "检测资料状态",
+    "photo": "修改头像",
+    "name": "修改昵称",
+    "username": "修改用户名",
+    "bio": "修改签名",
+    "folder": "添加分组文件夹",
+    "all": "修改全部选项",
+}
 
 
 def install_tgapipldc_panel() -> None:
     """给 MainWindow 动态安装 tgapipldc 工作台，避免大范围改 main_window.py。"""
     from app.gui.main_window import MainWindow
     from app.gui.pages.tgapipldc_page import TgapipldcPage
+    from app.gui.pages.tgapipldc_profile_maintenance_page import (
+        TgapipldcProfileMaintenancePage,
+    )
 
     if getattr(MainWindow, "_tgapipldc_panel_installed", False):
         return
@@ -15,40 +31,103 @@ def install_tgapipldc_panel() -> None:
 
     def patched_init(self, *args, **kwargs):
         original_init(self, *args, **kwargs)
-        _setup_tgapipldc_page(self, TgapipldcPage)
+        _setup_tgapipldc_pages(
+            self,
+            TgapipldcPage,
+            TgapipldcProfileMaintenancePage,
+        )
 
     MainWindow.__init__ = patched_init
     MainWindow._tgapipldc_panel_installed = True
 
 
-def _setup_tgapipldc_page(window, page_class) -> None:
+def _setup_tgapipldc_pages(window, api_page_class, profile_page_class) -> None:
     if hasattr(window, "tgapipldc_page"):
         return
 
-    page = page_class()
-    window.tgapipldc_page = page
-    window.tabs.addTab(page, "API 批量工作台")
+    api_page = api_page_class()
+    profile_page = profile_page_class()
+
+    window.tgapipldc_page = api_page
+    window.tgapipldc_profile_maintenance_page = profile_page
+
+    window.tabs.addTab(api_page, "API 批量工作台")
+    window.tabs.addTab(profile_page, "账号资料维护")
 
     runtime = window.runtime_service
 
-    runtime.tgapipldc_log_received.connect(page.append_log)
-    runtime.tgapipldc_process_status_changed.connect(page.set_process_running)
+    runtime.tgapipldc_log_received.connect(api_page.append_log)
+    runtime.tgapipldc_log_received.connect(profile_page.append_log)
+    runtime.tgapipldc_process_status_changed.connect(api_page.set_process_running)
+    runtime.tgapipldc_process_status_changed.connect(profile_page.set_process_running)
 
-    page.reload_csv_requested.connect(lambda: _reload_csv(window))
-    page.overwrite_accounts_requested.connect(lambda text: _call(window, lambda: runtime.overwrite_tgapipldc_accounts_csv(text), "覆盖 accounts.csv 成功"))
-    page.overwrite_proxies_requested.connect(lambda text: _call(window, lambda: runtime.overwrite_tgapipldc_proxies_csv(text), "覆盖 proxies.csv 成功"))
+    api_page.reload_csv_requested.connect(lambda: _reload_csv(window))
+    api_page.overwrite_accounts_requested.connect(
+        lambda text: _call(
+            window,
+            lambda: runtime.overwrite_tgapipldc_accounts_csv(text),
+            "覆盖 accounts.csv 成功",
+        )
+    )
+    api_page.overwrite_proxies_requested.connect(
+        lambda text: _call(
+            window,
+            lambda: runtime.overwrite_tgapipldc_proxies_csv(text),
+            "覆盖 proxies.csv 成功",
+        )
+    )
 
-    page.test_proxies_requested.connect(lambda: _call(window, runtime.run_tgapipldc_test_proxies, "已开始检测代理"))
-    page.build_proxy_pool_requested.connect(lambda: _call(window, runtime.run_tgapipldc_build_proxy_pool, "已开始构建可用代理池"))
-    page.assign_proxies_requested.connect(lambda: _call(window, runtime.run_tgapipldc_assign_proxies, "已开始绑定账号和代理"))
-    page.export_api_requested.connect(lambda: _call(window, runtime.run_tgapipldc_export_api, "已开始批量获取 API"))
-    page.stop_process_requested.connect(lambda: _call(window, runtime.stop_tgapipldc_process, "已请求停止当前流程"))
+    api_page.test_proxies_requested.connect(
+        lambda: _call(window, runtime.run_tgapipldc_test_proxies, "已开始检测代理")
+    )
+    api_page.build_proxy_pool_requested.connect(
+        lambda: _call(window, runtime.run_tgapipldc_build_proxy_pool, "已开始构建可用代理池")
+    )
+    api_page.assign_proxies_requested.connect(
+        lambda: _call(window, runtime.run_tgapipldc_assign_proxies, "已开始绑定账号和代理")
+    )
+    api_page.export_api_requested.connect(
+        lambda: _call(window, runtime.run_tgapipldc_export_api, "已开始批量获取 API")
+    )
+    api_page.stop_process_requested.connect(
+        lambda: _call(window, runtime.stop_tgapipldc_process, "已请求停止当前流程")
+    )
 
-    page.import_api_requested.connect(lambda: _call_and_refresh(window, runtime.run_tgapipldc_import_api_to_wqtg, "API 已导入 WQTG 账号"))
-    page.login_wqtg_accounts_requested.connect(lambda: _call(window, runtime.run_tgapipldc_login_wqtg_accounts, "已开始 WQTG 批量登录"))
+    api_page.import_api_requested.connect(
+        lambda: _call_and_refresh(
+            window,
+            runtime.run_tgapipldc_import_api_to_wqtg,
+            "API 已导入 WQTG 账号",
+        )
+    )
+    api_page.login_wqtg_accounts_requested.connect(
+        lambda: _call(window, runtime.run_tgapipldc_login_wqtg_accounts, "已开始 WQTG 批量登录")
+    )
+
+    profile_page.upload_profile_photos_requested.connect(
+        lambda paths: _upload_profile_photos(window, paths)
+    )
+    profile_page.open_profile_photo_library_requested.connect(
+        lambda: _open_profile_photo_library(window)
+    )
+    profile_page.clear_profile_maintenance_results_requested.connect(
+        lambda: _clear_profile_maintenance_results(window)
+    )
+    profile_page.profile_maintenance_requested.connect(
+        lambda action, config: _run_profile_maintenance(window, action, config)
+    )
+    profile_page.stop_process_requested.connect(
+        lambda: _call(window, runtime.stop_tgapipldc_process, "已请求停止当前流程")
+    )
 
     _reload_csv(window)
-    page.set_process_running(False)
+    _reload_profile_maintenance_config(window)
+    api_page.set_process_running(False)
+    profile_page.set_process_running(False)
+
+
+def _profile_page(window):
+    return getattr(window, "tgapipldc_profile_maintenance_page", window.tgapipldc_page)
 
 
 def _reload_csv(window) -> None:
@@ -60,6 +139,81 @@ def _reload_csv(window) -> None:
         page.append_log("CSV 内容已刷新")
     except Exception as exc:
         _show_error(window, f"刷新 CSV 失败：{exc}")
+
+
+def _reload_profile_maintenance_config(window) -> None:
+    page = _profile_page(window)
+    runtime = window.runtime_service
+    try:
+        config = runtime.tgapipldc_workspace_service.read_profile_maintenance_config()
+        page.set_profile_maintenance_config(config)
+        page.append_log("账号资料维护配置已加载")
+    except Exception as exc:
+        _show_error(window, f"加载账号资料维护配置失败：{exc}")
+
+
+def _upload_profile_photos(window, file_paths) -> None:
+    runtime = window.runtime_service
+    page = _profile_page(window)
+    try:
+        result = runtime.tgapipldc_workspace_service.copy_profile_photo_files(file_paths or [])
+        message = (
+            f"图片上传完成：复制 {result.copied_count} 张，"
+            f"跳过 {result.skipped_count} 个，目录：{result.library_dir}"
+        )
+        page.append_log(message)
+        window.statusBar().showMessage(message, 3000)
+    except Exception as exc:
+        _show_error(window, f"上传图片失败：{exc}")
+
+
+def _open_profile_photo_library(window) -> None:
+    runtime = window.runtime_service
+    page = _profile_page(window)
+    try:
+        runtime.tgapipldc_workspace_service.ensure_structure()
+        directory = runtime.tgapipldc_workspace_service.profile_photos_dir
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(directory)))
+        page.append_log(f"已打开图片库：{directory}")
+    except Exception as exc:
+        _show_error(window, f"打开图片库失败：{exc}")
+
+
+def _clear_profile_maintenance_results(window) -> None:
+    runtime = window.runtime_service
+    page = _profile_page(window)
+    try:
+        runtime.tgapipldc_workspace_service.clear_profile_maintenance_results()
+        message = "账号资料维护结果已清空"
+        page.append_log(message)
+        window.statusBar().showMessage(message, 3000)
+    except Exception as exc:
+        _show_error(window, f"清空账号资料维护结果失败：{exc}")
+
+
+def _run_profile_maintenance(window, action: str, config: dict) -> None:
+    runtime = window.runtime_service
+    page = _profile_page(window)
+    safe_action = str(action or "status").strip().lower() or "status"
+    action_name = PROFILE_MAINTENANCE_ACTION_NAMES.get(safe_action, safe_action)
+
+    def task() -> None:
+        result = runtime.tgapipldc_runner_service.run_profile_maintenance(
+            action=safe_action,
+            log_callback=runtime._emit_tgapipldc_log,
+        )
+        if not result.success:
+            raise RuntimeError(f"账号资料维护失败，退出码：{result.return_code}")
+
+    try:
+        normalized_config = runtime.tgapipldc_workspace_service.save_profile_maintenance_config(config or {})
+        page.set_profile_maintenance_config(normalized_config)
+        runtime._run_tgapipldc_background(action_name, task)
+        message = f"已开始账号资料维护：{action_name}"
+        page.append_log(message)
+        window.statusBar().showMessage(message, 3000)
+    except Exception as exc:
+        _show_error(window, str(exc))
 
 
 def _call(window, func, success_message: str) -> None:
@@ -87,10 +241,11 @@ def _call_and_refresh(window, func, success_message: str) -> None:
 
 def _show_error(window, message: str) -> None:
     safe_message = str(message or "")
-    try:
-        window.tgapipldc_page.append_log(f"错误：{safe_message}")
-    except Exception:
-        pass
+    for attr in ("tgapipldc_page", "tgapipldc_profile_maintenance_page"):
+        try:
+            getattr(window, attr).append_log(f"错误：{safe_message}")
+        except Exception:
+            pass
 
     if hasattr(window, "_show_error"):
         window._show_error(safe_message)

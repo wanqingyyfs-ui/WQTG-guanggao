@@ -38,11 +38,13 @@ class TgapipldcRunnerService:
     - assign_proxies.py
     - login_telegram_web.py
     - open_account_browser.py
+    - update_telegram_profile.py
 
     说明：
     - 这是 GUI 面板接入前的脚本桥接层；
-    - 代理检测和账号绑定后续已经有服务化版本，但保留脚本运行能力方便校验；
-    - login_telegram_web.py 体量很大，当前阶段先使用 runner 调用迁移后的原脚本，后续再逐步拆成服务；
+    - 代理检测和账号绑定已经有服务化版本，但保留脚本运行能力方便校验；
+    - login_telegram_web.py 体量很大，当前阶段先使用 runner 调用迁移后的原脚本；
+    - update_telegram_profile.py 独立负责账号资料维护，不污染 API 获取流程；
     - 本类不依赖 PySide6，可以在后台线程里被 RuntimeService 或页面 Worker 调用。
     """
 
@@ -51,6 +53,7 @@ class TgapipldcRunnerService:
     SCRIPT_ASSIGN_PROXIES = "assign_proxies.py"
     SCRIPT_LOGIN_TELEGRAM_WEB = "login_telegram_web.py"
     SCRIPT_OPEN_ACCOUNT_BROWSER = "open_account_browser.py"
+    SCRIPT_UPDATE_TELEGRAM_PROFILE = "update_telegram_profile.py"
 
     def __init__(self, workspace_service: TgapipldcWorkspaceService | None = None):
         self.workspace = workspace_service or TgapipldcWorkspaceService()
@@ -116,6 +119,19 @@ class TgapipldcRunnerService:
             script_name=self.SCRIPT_OPEN_ACCOUNT_BROWSER,
             command_name="打开账号浏览器",
             log_callback=log_callback,
+        )
+
+    def run_profile_maintenance(
+        self,
+        action: str,
+        log_callback: LogCallback | None = None,
+    ) -> TgapipldcCommandResult:
+        safe_action = str(action or "status").strip().lower() or "status"
+        return self.run_script(
+            script_name=self.SCRIPT_UPDATE_TELEGRAM_PROFILE,
+            command_name=f"账号资料维护-{safe_action}",
+            log_callback=log_callback,
+            extra_args=["--action", safe_action],
         )
 
     def run_script(
