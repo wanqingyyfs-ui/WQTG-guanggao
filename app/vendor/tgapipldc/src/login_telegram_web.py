@@ -16,7 +16,7 @@ from playwright.sync_api import sync_playwright
 from proxy_utils import parse_raw_proxy
 
 
-SCRIPT_VERSION = "official-state-machine-058"
+SCRIPT_VERSION = "official-state-machine-063-force-mytelegram-phone-input"
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 ACCOUNT_PROXY_MAP_FILE = BASE_DIR / "data" / "account_proxy_map.csv"
@@ -1716,27 +1716,146 @@ def scroll_777000_to_bottom(page):
 
 
 
+def click_777000_chatlist_row(page, timeout: int = 12000) -> bool:
+    """
+    从 Telegram Web 左侧聊天列表点击 Telegram 官方服务号 #777000。
+
+    关键原则：
+    - 优先点击左侧已经存在的 chatlist 行：a.chatlist-chat[data-peer-id='777000']。
+    - 不把 https://web.telegram.org/k/#777000 作为首选打开方式。
+    - 点击行后再读取当前中间聊天窗口 DOM，避免 hash 地址打开后 DOM 没稳定导致误判。
+    """
+    print("正在从左侧聊天列表查找并点击 Telegram 官方服务号 #777000...")
+
+    chat_row_selectors = [
+        "a.chatlist-chat[data-peer-id='777000']",
+        "a.row.chatlist-chat[data-peer-id='777000']",
+        "a[href='#777000'][data-peer-id='777000']",
+        "a[href='#777000'].chatlist-chat",
+        "#column-left a.chatlist-chat[data-peer-id='777000']",
+        "#column-left a[href='#777000']",
+        ".chatlist a.chatlist-chat[data-peer-id='777000']",
+        ".chatlist a[href='#777000']",
+    ]
+
+    deadline = time.time() + timeout / 1000
+    attempt = 1
+    last_count_info = ""
+
+    while time.time() < deadline:
+        try:
+            page.bring_to_front()
+        except Exception:
+            pass
+
+        # 确保当前在 Telegram Web 聊天列表主页面，而不是验证码页 / my.telegram.org / 其它页面。
+        if "web.telegram.org" not in (page.url or ""):
+            try:
+                page.goto(TELEGRAM_WEB_URL, wait_until="commit", timeout=12000)
+            except Exception as exc:
+                print(f"打开 Telegram Web 主页面失败，继续等待左侧列表：{exc}")
+            page.wait_for_timeout(2500)
+
+        for selector in chat_row_selectors:
+            locator = page.locator(selector)
+            try:
+                count = locator.count()
+            except Exception:
+                count = 0
+            if count:
+                last_count_info = f"{selector} count={count}"
+
+            for index in range(count):
+                item = locator.nth(index)
+                try:
+                    if not item.is_visible(timeout=800):
+                        continue
+                    item.scroll_into_view_if_needed(timeout=3000)
+                    item.click(timeout=6000)
+                    print(f"已点击左侧 #777000 聊天行：selector={selector}, index={index}")
+                    page.wait_for_timeout(2500)
+                    scroll_777000_to_bottom(page)
+                    page.wait_for_timeout(1500)
+                    return True
+                except Exception as exc:
+                    try:
+                        item.click(timeout=6000, force=True)
+                        print(f"已强制点击左侧 #777000 聊天行：selector={selector}, index={index}")
+                        page.wait_for_timeout(2500)
+                        scroll_777000_to_bottom(page)
+                        page.wait_for_timeout(1500)
+                        return True
+                    except Exception:
+                        print(f"点击 #777000 聊天行失败，继续找下一个候选：{exc}")
+                        continue
+
+        # DOM 兜底：不要求可见选择器完全匹配，直接从页面里找 peer-id=777000 的 chatlist 行。
+        try:
+            clicked_by_dom = page.evaluate(
+                """
+                () => {
+                    function visible(el) {
+                        if (!el) return false;
+                        const rect = el.getBoundingClientRect();
+                        const style = window.getComputedStyle(el);
+                        return style
+                            && style.display !== 'none'
+                            && style.visibility !== 'hidden'
+                            && rect.width > 0
+                            && rect.height > 0;
+                    }
+                    const candidates = Array.from(document.querySelectorAll([
+                        "a.chatlist-chat[data-peer-id='777000']",
+                        "a.row.chatlist-chat[data-peer-id='777000']",
+                        "a[href='#777000'][data-peer-id='777000']",
+                        "a[href='#777000'].chatlist-chat",
+                        "#column-left a[data-peer-id='777000']",
+                    ].join(',')));
+                    const target = candidates.find(visible) || candidates[0];
+                    if (!target) return false;
+                    target.scrollIntoView({block: 'center', inline: 'nearest'});
+                    target.dispatchEvent(new MouseEvent('mousedown', {bubbles: true, cancelable: true, view: window}));
+                    target.dispatchEvent(new MouseEvent('mouseup', {bubbles: true, cancelable: true, view: window}));
+                    target.click();
+                    return true;
+                }
+                """
+            )
+            if clicked_by_dom:
+                print("已通过 DOM 方式点击左侧 #777000 聊天行。")
+                page.wait_for_timeout(2500)
+                scroll_777000_to_bottom(page)
+                page.wait_for_timeout(1500)
+                return True
+        except Exception as exc:
+            print(f"DOM 方式点击 #777000 聊天行失败，继续等待：{exc}")
+
+        if attempt % 3 == 0:
+            print("暂未找到左侧 #777000 聊天行，回到 Telegram Web 主页面刷新聊天列表。")
+            safe_reload_or_goto(page, TELEGRAM_WEB_URL, label="Telegram 聊天列表", wait_ms=4000)
+        else:
+            print(f"暂未找到左侧 #777000 聊天行，继续等待。最后候选统计：{last_count_info or '无'}")
+            page.wait_for_timeout(1200)
+
+        attempt += 1
+
+    print("超过等待时间仍未能从左侧聊天列表点击 #777000。")
+    return False
+
+
 def open_telegram_service_chat(page, timeout: int = 90000) -> bool:
     """
     打开 Telegram 官方服务号 #777000。
 
-    成功条件不再死盯 bubble 上是否有 data-peer-id="777000"。
-    Telegram Web K 的真实渲染里，当前聊天窗口的 bubble 经常只有 data-mid/data-timestamp，
-    peer 信息不一定挂在 bubble 节点上。
-
-    官方写法上使用 Locator 等待、点击、滚动；读取消息时只从当前聊天窗口 DOM 取，
-    不使用左侧聊天列表 preview 作为 my.telegram.org 的验证码基准。
+    修复点：
+    - 不再优先 page.goto(https://web.telegram.org/k/#777000)。
+    - 优先在 Telegram Web 左侧聊天列表点击真实会话行：
+      a.chatlist-chat[data-peer-id='777000'] / a[href='#777000'][data-peer-id='777000']。
+    - 点击进入对话后，再从当前中间聊天窗口读取真实消息 DOM。
     """
-    print("准备打开 Telegram 官方消息聊天 #777000...")
+    print("准备通过左侧聊天列表打开 Telegram 官方消息聊天 #777000...")
     deadline = time.time() + timeout / 1000
     attempt = 1
-    chat_selectors = [
-        "a[href='#777000'][data-peer-id='777000']",
-        "a[href='#777000']",
-        "a[data-peer-id='777000']",
-        "a.chatlist-chat[data-peer-id='777000']",
-        "[data-peer-id='777000']",
-    ]
 
     def has_current_chat_message() -> bool:
         snapshot = latest_777000_dom_snapshot(page)
@@ -1751,70 +1870,41 @@ def open_telegram_service_chat(page, timeout: int = 90000) -> bool:
         except Exception:
             pass
 
+        # 已经在 #777000 页面时，也必须读到当前聊天窗口真实消息才算成功。
         if "#777000" in (page.url or ""):
-            page.wait_for_load_state("domcontentloaded", timeout=5000)
             scroll_777000_to_bottom(page)
             page.wait_for_timeout(1500)
             if has_current_chat_message():
                 return True
 
-        try:
-            page.goto(TELEGRAM_SERVICE_CHAT_URL, wait_until="domcontentloaded", timeout=30000)
-            page.wait_for_timeout(7000)
-            scroll_777000_to_bottom(page)
-            page.wait_for_timeout(1500)
-            if has_current_chat_message():
-                return True
-        except Exception as e:
-            print(f"第 {attempt} 次直接打开 #777000 失败：{e}")
+        state = get_telegram_page_state(page)
+        if state in {"phone", "code", "password", "phone_entry"}:
+            print(f"当前不是已登录聊天界面，不能点击左侧 #777000。页面状态：{state}")
+            return False
 
-        if not is_telegram_logged_in_page(page, timeout=700):
-            state = get_telegram_page_state(page)
-            if state in {"phone", "code", "password", "phone_entry"}:
-                print(f"当前不是已登录聊天界面，无法打开 #777000。页面状态：{state}")
-                return False
-
-        try:
-            page.goto(TELEGRAM_WEB_URL, wait_until="domcontentloaded", timeout=30000)
-            page.wait_for_timeout(3000)
-        except Exception:
-            safe_reload_or_goto(page, TELEGRAM_WEB_URL, label="Telegram 聊天列表", wait_ms=3000)
-
-        clicked = False
-        for selector in chat_selectors:
-            item = visible_from_selector(page, selector, timeout=1200)
-            if item is None:
-                continue
+        if state != "logged_in":
+            print(f"当前 Telegram 页面状态不是 logged_in，先回到 Telegram Web 主页面。状态：{state}")
             try:
-                item.scroll_into_view_if_needed(timeout=3000)
-                item.click(timeout=6000)
-            except Exception:
-                try:
-                    item.click(timeout=6000, force=True)
-                except Exception:
-                    continue
-            clicked = True
-            page.wait_for_timeout(2500)
-            scroll_777000_to_bottom(page)
-            page.wait_for_timeout(1500)
+                page.goto(TELEGRAM_WEB_URL, wait_until="commit", timeout=12000)
+            except Exception as exc:
+                print(f"回到 Telegram Web 主页面失败，继续等待：{exc}")
+            page.wait_for_timeout(3000)
+
+        if click_777000_chatlist_row(page, timeout=12000):
             if has_current_chat_message():
                 return True
-            print("已点击 #777000，但当前聊天窗口消息还没读到，继续刷新/滚动检查。")
-            break
-
-        if not clicked:
-            print("本次未在聊天列表里找到 #777000 入口，继续通过 hash 地址重试。")
+            print("已点击左侧 #777000，但当前聊天窗口消息还没读到，继续滚动/刷新后复查。")
 
         if attempt % 3 == 0:
-            safe_reload_or_goto(page, TELEGRAM_SERVICE_CHAT_URL, label="#777000", wait_ms=7000)
+            # 只刷新 Telegram 主聊天列表，不再优先跳 hash 地址。
+            safe_reload_or_goto(page, TELEGRAM_WEB_URL, label="Telegram 聊天列表", wait_ms=5000)
         else:
-            page.wait_for_timeout(1200)
+            page.wait_for_timeout(1500)
 
         attempt += 1
 
-    print("超过等待时间仍未读到 #777000 当前聊天窗口消息。")
+    print("超过等待时间仍未通过左侧聊天列表读到 #777000 当前聊天窗口消息。")
     return False
-
 
 def open_telegram_service_chat_guarded(
     page,
@@ -2367,6 +2457,47 @@ def assert_mytelegram_not_too_many_tries(my_page, stage: str = ""):
         raise MyTelegramTooManyTriesError(reason)
 
 
+def mytelegram_body_text(my_page, timeout: int = 2000) -> str:
+    try:
+        return re.sub(r"\s+", " ", my_page.locator("body").inner_text(timeout=timeout) or "").strip()
+    except Exception:
+        return ""
+
+
+def is_mytelegram_bot_id_required_page(my_page) -> bool:
+    text = mytelegram_body_text(my_page, timeout=1500).lower()
+    url = ""
+    try:
+        url = my_page.url or ""
+    except Exception:
+        url = ""
+    return "bot_id required" in text or ("/auth" in url and text.strip() == "bot_id required")
+
+
+def recover_mytelegram_from_bot_id_required(my_page, stage: str = "") -> bool:
+    if not is_mytelegram_bot_id_required_page(my_page):
+        return False
+
+    label = f"{stage}：" if stage else ""
+    print(f"{label}检测到 my.telegram.org 错误页面 bot_id required，关闭错误 /auth 分支并重新打开官方入口。")
+    try:
+        dump_debug_html(my_page, "mytelegram_bot_id_required")
+    except Exception:
+        pass
+
+    for target_url in [MY_TELEGRAM_URL, "https://my.telegram.org/apps"]:
+        try:
+            my_page.goto(target_url, wait_until="domcontentloaded", timeout=60000)
+            my_page.wait_for_timeout(4000)
+            if not is_mytelegram_bot_id_required_page(my_page):
+                print(f"已从 bot_id required 恢复到：{target_url}")
+                return True
+        except Exception as e:
+            print(f"恢复 my.telegram.org 页面失败：{target_url}，{e}")
+
+    return False
+
+
 def wait_for_mytelegram_login_page(my_page, timeout: int = 180000) -> bool:
     print("正在打开 my.telegram.org，加载不成功会重新加载...")
     deadline = time.time() + timeout / 1000
@@ -2374,18 +2505,22 @@ def wait_for_mytelegram_login_page(my_page, timeout: int = 180000) -> bool:
     while time.time() < deadline:
         try:
             print(f"第 {attempt} 次加载 my.telegram.org...")
-            if attempt == 1:
-                my_page.goto(MY_TELEGRAM_URL, wait_until="domcontentloaded", timeout=60000)
-            else:
-                my_page.reload(wait_until="domcontentloaded", timeout=60000)
+            # 不用 /auth，也不在 bot_id required 页面 reload；始终回到官方入口。
+            my_page.goto(MY_TELEGRAM_URL, wait_until="domcontentloaded", timeout=60000)
         except Exception as e:
             print(f"my.telegram.org 加载失败：{e}")
             try:
-                my_page.goto(MY_TELEGRAM_URL, wait_until="domcontentloaded", timeout=60000)
+                my_page.goto(MY_TELEGRAM_URL, wait_until="commit", timeout=60000)
             except Exception:
                 pass
 
         my_page.wait_for_timeout(3000)
+
+        if is_mytelegram_bot_id_required_page(my_page):
+            recover_mytelegram_from_bot_id_required(my_page, "加载 my.telegram.org")
+            attempt += 1
+            continue
+
         assert_mytelegram_not_too_many_tries(my_page, "my.telegram.org 加载后检测到限制")
 
         for selector, label in [("input#my_login_phone", "手机号输入框"), ("input#my_password", "验证码输入框")]:
@@ -2396,64 +2531,85 @@ def wait_for_mytelegram_login_page(my_page, timeout: int = 180000) -> bool:
                     return True
             except Exception:
                 pass
-        attempt += 1
-    raise TimeoutError("my.telegram.org 在限定时间内没有加载到手机号页或验证码页")
 
+        # 如果已经登录，首页会出现 API development tools，此时也算可继续。
+        try:
+            body_text = mytelegram_body_text(my_page, timeout=1500).lower()
+            if "api development tools" in body_text or "delete account" in body_text or "log out" in body_text:
+                print("my.telegram.org 已是登录后的首页。")
+                return True
+        except Exception:
+            pass
+
+        attempt += 1
+
+    raise TimeoutError("my.telegram.org 在限定时间内没有加载到手机号页、验证码页或已登录首页")
 
 def click_mytelegram_submit_button(my_page, label: str, timeout: int = 15000) -> bool:
     deadline = time.time() + timeout / 1000
-    if label.lower() in {"登入", "登录", "sign in", "login"}:
-        button_name_regex = re.compile(r"^(sign\s*in|log\s*in|login|登入|登录|登錄)$", re.IGNORECASE)
-        selectors = [
-            "form:has(input#my_password) button[type='submit']",
-            "button[type='submit']:has-text('Sign In')",
-            "button[type='submit']:has-text('登入')",
-            "button[type='submit']:has-text('登录')",
-        ]
-    else:
-        button_name_regex = re.compile(r"^(next|continue|submit|下一个|下一步|继续|提交)$", re.IGNORECASE)
-        selectors = [
-            "form:has(input#my_login_phone) button[type='submit']",
-            "button[type='submit']:has-text('Next')",
-            "button[type='submit']:has-text('下一个')",
-            "button[type='submit']:has-text('下一步')",
-        ]
+    lower_label = label.lower()
 
-    selectors.extend(["button[type='submit'].btn.btn-primary.btn-lg", "button[type='submit'].btn-primary", "button[type='submit']", "input[type='submit']"])
+    if lower_label in {"登入", "登录", "sign in", "login"}:
+        form_selectors = [
+            "form:has(input#my_password) button[type='submit']",
+            "form:has(input#my_password) input[type='submit']",
+            "form:has(input#my_password) button.btn-primary",
+            "form:has(input#my_password) .btn-primary",
+        ]
+        fallback_input_selector = "input#my_password"
+        label_name = "Sign In"
+    else:
+        form_selectors = [
+            "form:has(input#my_login_phone) button[type='submit']",
+            "form:has(input#my_login_phone) input[type='submit']",
+            "form:has(input#my_login_phone) button.btn-primary",
+            "form:has(input#my_login_phone) .btn-primary",
+        ]
+        fallback_input_selector = "input#my_login_phone"
+        label_name = "Next"
+
     while time.time() < deadline:
-        for candidate in [my_page.get_by_role("button", name=button_name_regex), my_page.get_by_text(button_name_regex)]:
-            item = first_visible(candidate, timeout=800)
-            if item is None:
-                continue
-            try:
-                item.click(timeout=5000)
-                print(f"已通过按钮文字点击 my.telegram.org {label} 按钮。")
-                return True
-            except Exception:
-                try:
-                    item.click(timeout=5000, force=True)
-                    print(f"已强制点击 my.telegram.org {label} 按钮。")
-                    return True
-                except Exception:
-                    pass
-        for selector in selectors:
+        if is_mytelegram_bot_id_required_page(my_page):
+            recover_mytelegram_from_bot_id_required(my_page, f"点击 {label_name} 前")
+            my_page.wait_for_timeout(1000)
+
+        for selector in form_selectors:
             item = visible_from_selector(my_page, selector, timeout=800)
             if item is None:
                 continue
             try:
+                item.scroll_into_view_if_needed(timeout=3000)
+            except Exception:
+                pass
+            try:
                 item.click(timeout=5000)
-                print(f"已通过选择器点击 my.telegram.org {label} 按钮：{selector}")
+                print(f"已通过表单选择器点击 my.telegram.org {label_name} 按钮：{selector}")
+                my_page.wait_for_timeout(1200)
                 return True
             except Exception:
                 try:
                     item.click(timeout=5000, force=True)
-                    print(f"已强制点击 my.telegram.org {label} 按钮：{selector}")
+                    print(f"已强制点击 my.telegram.org {label_name} 按钮：{selector}")
+                    my_page.wait_for_timeout(1200)
                     return True
                 except Exception:
                     continue
-        my_page.wait_for_timeout(500)
-    raise RuntimeError(f"未找到 my.telegram.org {label} 按钮")
 
+        # 兜底：只在对应输入框聚焦后按 Enter，不再全页面按文字乱点，避免误进 /auth 的 bot_id 分支。
+        try:
+            field = my_page.locator(fallback_input_selector).first
+            if field.is_visible(timeout=800):
+                field.focus(timeout=3000)
+                my_page.keyboard.press("Enter")
+                print(f"未找到明确表单按钮，已在 {fallback_input_selector} 输入框按 Enter 提交 my.telegram.org {label_name}。")
+                my_page.wait_for_timeout(1200)
+                return True
+        except Exception:
+            pass
+
+        my_page.wait_for_timeout(500)
+
+    raise RuntimeError(f"未找到 my.telegram.org {label_name} 表单提交按钮")
 
 def wait_for_mytelegram_phone_submit_feedback(my_page, checks_per_round: int = 5, max_refresh_rounds: int = 3, interval_ms: int = 3000, timeout: int | None = None):
     print(
@@ -2464,6 +2620,14 @@ def wait_for_mytelegram_phone_submit_feedback(my_page, checks_per_round: int = 5
 
     for refresh_round in range(1, max_refresh_rounds + 1):
         for check_index in range(1, checks_per_round + 1):
+            if is_mytelegram_bot_id_required_page(my_page):
+                recover_mytelegram_from_bot_id_required(my_page, "提交手机号后")
+                last_snapshot = mytelegram_body_text(my_page, timeout=1500)[:500]
+                raise RuntimeError(
+                    "my.telegram.org 提交手机号后进入 bot_id required 错误页，"
+                    "已重新打开官方入口；请重新运行当前账号流程。"
+                )
+
             assert_mytelegram_not_too_many_tries(my_page, "my.telegram.org 提交手机号后检测到限制")
 
             try:
@@ -2487,12 +2651,12 @@ def wait_for_mytelegram_phone_submit_feedback(my_page, checks_per_round: int = 5
             my_page.wait_for_timeout(interval_ms)
 
         if refresh_round < max_refresh_rounds:
-            print("本轮 5 次未进入验证码页，执行 my.telegram.org 刷新守护。")
+            print("本轮 5 次未进入验证码页，重新打开 my.telegram.org 官方入口。")
             try:
-                my_page.reload(wait_until="commit", timeout=15000)
+                my_page.goto(MY_TELEGRAM_URL, wait_until="commit", timeout=15000)
             except Exception:
                 try:
-                    my_page.goto(MY_TELEGRAM_URL, wait_until="commit", timeout=15000)
+                    my_page.reload(wait_until="commit", timeout=15000)
                 except Exception:
                     pass
             my_page.wait_for_timeout(7000)
@@ -2502,8 +2666,13 @@ def wait_for_mytelegram_phone_submit_feedback(my_page, checks_per_round: int = 5
         f"页面片段：{last_snapshot}"
     )
 
-def fill_mytelegram_phone_without_submit(my_page, phone: str) -> bool:
+def fill_mytelegram_phone_without_submit(my_page, phone: str) -> bool | str:
     wait_for_mytelegram_login_page(my_page, timeout=180000)
+
+    if is_mytelegram_bot_id_required_page(my_page):
+        recover_mytelegram_from_bot_id_required(my_page, "填写手机号前")
+        wait_for_mytelegram_login_page(my_page, timeout=60000)
+
     assert_mytelegram_not_too_many_tries(my_page, "my.telegram.org 手机号页检测到限制")
 
     try:
@@ -2515,15 +2684,31 @@ def fill_mytelegram_phone_without_submit(my_page, phone: str) -> bool:
         pass
 
     phone_input = my_page.locator("input#my_login_phone").first
-    phone_input.wait_for(state="visible", timeout=30000)
-    phone_input.scroll_into_view_if_needed(timeout=5000)
-    phone_input.fill(phone, timeout=10000)
-    current_phone = phone_input.input_value(timeout=3000) or ""
-    if re.sub(r"\D", "", phone) not in re.sub(r"\D", "", current_phone):
-        raise RuntimeError(f"my.telegram.org 手机号填写失败，目标={phone}，当前={current_phone}")
-    print(f"已在 my.telegram.org 填入手机号：{phone}")
-    return False
+    try:
+        if phone_input.is_visible(timeout=3000):
+            phone_input.wait_for(state="visible", timeout=30000)
+            phone_input.scroll_into_view_if_needed(timeout=5000)
+            phone_input.click(timeout=8000)
+            phone_input.fill("", timeout=5000)
+            phone_input.fill(phone, timeout=10000)
+            current_phone = phone_input.input_value(timeout=3000) or ""
+            if re.sub(r"\D", "", phone) not in re.sub(r"\D", "", current_phone):
+                raise RuntimeError(f"my.telegram.org 手机号填写失败，目标={phone}，当前={current_phone}")
+            print(f"已点击 my.telegram.org 手机号输入框并填入手机号：{phone}")
+            return False
+    except Exception as e:
+        raise RuntimeError(f"my.telegram.org 手机号输入框存在但填写失败：{e}")
 
+    # 只有完全没有手机号输入框、也没有验证码输入框时，才允许判断为已经登录首页。
+    try:
+        body_text = mytelegram_body_text(my_page, timeout=1500).lower()
+        if "api development tools" in body_text or "delete account" in body_text or "log out" in body_text:
+            print("my.telegram.org 当前没有手机号输入框，且已是登录首页，将直接进入 API 开发工具流程。")
+            return "logged_in_home"
+    except Exception:
+        pass
+
+    raise RuntimeError("my.telegram.org 没有找到手机号输入框，也没有进入验证码页或已登录首页")
 
 def wait_for_mytelegram_signin_feedback(my_page, checks_per_round: int = 5, max_refresh_rounds: int = 3, interval_ms: int = 3000, timeout: int | None = None) -> str:
     print(
@@ -2534,6 +2719,11 @@ def wait_for_mytelegram_signin_feedback(my_page, checks_per_round: int = 5, max_
 
     for refresh_round in range(1, max_refresh_rounds + 1):
         for check_index in range(1, checks_per_round + 1):
+            if is_mytelegram_bot_id_required_page(my_page):
+                recover_mytelegram_from_bot_id_required(my_page, "提交验证码后")
+                set_last_automation_result("mytelegram_bot_id_required", "提交验证码后进入 bot_id required 错误页")
+                return "error"
+
             assert_mytelegram_not_too_many_tries(my_page, "my.telegram.org 提交验证码后检测到限制")
             try:
                 body_text = my_page.locator("body").inner_text(timeout=2000)
@@ -2558,9 +2748,9 @@ def wait_for_mytelegram_signin_feedback(my_page, checks_per_round: int = 5, max_
             my_page.wait_for_timeout(interval_ms)
 
         if refresh_round < max_refresh_rounds:
-            print("本轮 5 次未确认成功/失败，执行 my.telegram.org 刷新守护。")
+            print("本轮 5 次未确认成功/失败，重新打开 my.telegram.org 官方入口。")
             try:
-                my_page.reload(wait_until="commit", timeout=15000)
+                my_page.goto(MY_TELEGRAM_URL, wait_until="commit", timeout=15000)
             except Exception:
                 pass
             my_page.wait_for_timeout(7000)
@@ -2570,7 +2760,6 @@ def wait_for_mytelegram_signin_feedback(my_page, checks_per_round: int = 5, max_
     print(f"my.telegram.org 提交验证码后 3x5 未识别明确成功/失败：{note}")
     return "unknown"
 
-
 def generate_mytelegram_app_shortname(length: int = 10) -> str:
     alphabet = string.ascii_lowercase + string.digits
     first = secrets.choice(string.ascii_lowercase)
@@ -2579,6 +2768,10 @@ def generate_mytelegram_app_shortname(length: int = 10) -> str:
 
 def click_api_development_tools_link(my_page):
     print("准备点击 my.telegram.org 的 API 开发工具入口...")
+
+    if is_mytelegram_bot_id_required_page(my_page):
+        recover_mytelegram_from_bot_id_required(my_page, "进入 API 开发工具前")
+
     candidates = [
         my_page.locator("a[href='/apps']").first,
         my_page.locator("a[href$='/apps']").first,
@@ -2593,6 +2786,9 @@ def click_api_development_tools_link(my_page):
             candidate.scroll_into_view_if_needed(timeout=5000)
             candidate.click(timeout=8000)
             my_page.wait_for_timeout(2500)
+            if is_mytelegram_bot_id_required_page(my_page):
+                recover_mytelegram_from_bot_id_required(my_page, "点击 API 开发工具后")
+                continue
             print("已点击 API 开发工具入口。")
             return
         except Exception:
@@ -2601,9 +2797,8 @@ def click_api_development_tools_link(my_page):
     current_url = my_page.url or ""
     if "/apps" not in current_url:
         print("没有找到 API 开发工具链接，直接打开 /apps。")
-        my_page.goto("https://my.telegram.org/apps", wait_until="commit", timeout=30000)
-        my_page.wait_for_timeout(7000)
-
+    my_page.goto("https://my.telegram.org/apps", wait_until="commit", timeout=30000)
+    my_page.wait_for_timeout(7000)
 
 def detect_mytelegram_apps_page_state(my_page) -> str:
     """
@@ -2705,6 +2900,9 @@ def detect_mytelegram_apps_page_state(my_page) -> str:
     body_text = str(state_data.get("body_text") or "")
     lowered = body_text.lower()
 
+    if "bot_id required" in lowered:
+        return "bot_id_required"
+
     # 必须优先判断已经创建应用的配置页。
     if state_data.get("has_api_config_marker"):
         return "app_config"
@@ -2727,7 +2925,6 @@ def detect_mytelegram_apps_page_state(my_page) -> str:
         return "login"
     return "unknown"
 
-
 def wait_for_mytelegram_apps_state(my_page, target_states: set[str], reason: str, checks_per_round: int = 5, max_refresh_rounds: int = 3, interval_ms: int = 4000) -> str:
     print(f"{reason}，开始等待页面状态：{target_states}")
     last_state = "unknown"
@@ -2739,6 +2936,18 @@ def wait_for_mytelegram_apps_state(my_page, target_states: set[str], reason: str
                 f"my.telegram.org apps 状态检查：轮次 {refresh_round}/{max_refresh_rounds}，"
                 f"检查 {check_index}/{checks_per_round}，当前状态：{last_state}"
             )
+
+            if last_state == "bot_id_required":
+                recover_mytelegram_from_bot_id_required(my_page, reason)
+                try:
+                    my_page.goto("https://my.telegram.org/apps", wait_until="commit", timeout=30000)
+                except Exception:
+                    pass
+                my_page.wait_for_timeout(7000)
+                last_state = detect_mytelegram_apps_page_state(my_page)
+                if last_state in target_states:
+                    return last_state
+
             if last_state in target_states:
                 return last_state
             my_page.wait_for_timeout(interval_ms)
@@ -2756,59 +2965,214 @@ def wait_for_mytelegram_apps_state(my_page, target_states: set[str], reason: str
 
     return last_state
 
-
 def create_mytelegram_app_if_needed(my_page) -> tuple[str, str, str]:
     state = detect_mytelegram_apps_page_state(my_page)
+    if state == "bot_id_required":
+        recover_mytelegram_from_bot_id_required(my_page, "创建应用前")
+        try:
+            my_page.goto("https://my.telegram.org/apps", wait_until="commit", timeout=30000)
+            my_page.wait_for_timeout(7000)
+        except Exception:
+            pass
+        state = detect_mytelegram_apps_page_state(my_page)
+
     if state != "create_app":
         return state, "", ""
 
-    app_shortname = generate_mytelegram_app_shortname(10)
-    app_title = app_shortname
-    print(f"检测到未创建应用程序页面，准备创建应用：{app_title}")
+    def collect_create_page_error_text() -> str:
+        try:
+            data = my_page.evaluate(
+                """
+                () => {
+                    function clean(text) {
+                        return String(text || '').replace(/\s+/g, ' ').trim();
+                    }
 
-    title_input = my_page.locator("input#app_title").first
-    shortname_input = my_page.locator("input#app_shortname").first
-    title_input.wait_for(state="visible", timeout=30000)
-    shortname_input.wait_for(state="visible", timeout=30000)
-    title_input.fill(app_title, timeout=10000)
-    shortname_input.fill(app_shortname, timeout=10000)
+                    const selectors = [
+                        '.alert',
+                        '.alert-danger',
+                        '.alert-error',
+                        '.error',
+                        '.help-block',
+                        '.has-error',
+                        '.form-group.has-error',
+                        '.text-danger',
+                        '.label-danger',
+                        '#app_save_error',
+                        '[class*="error"]'
+                    ];
 
-    desktop_radio = my_page.locator("input[name='app_platform'][value='desktop']").first
-    try:
-        if desktop_radio.count() > 0:
-            desktop_radio.check(timeout=10000, force=True)
-            print("已选择应用平台：desktop / 桌面。")
-        else:
+                    const pieces = [];
+                    for (const selector of selectors) {
+                        for (const el of Array.from(document.querySelectorAll(selector))) {
+                            const text = clean(el.innerText || el.textContent || '');
+                            if (text && !pieces.includes(text)) pieces.push(text);
+                        }
+                    }
+
+                    const bodyText = clean(document.body ? (document.body.innerText || document.body.textContent || '') : '');
+                    return {
+                        errors: pieces.join(' | '),
+                        body: bodyText.slice(0, 800)
+                    };
+                }
+                """
+            ) or {}
+        except Exception:
+            data = {}
+
+        errors = str(data.get("errors") or "").strip()
+        body = str(data.get("body") or "").strip()
+        return errors or body[:500]
+
+    def fill_optional_create_fields(app_title: str, app_shortname: str) -> None:
+        field_values = [
+            ("input#app_title", app_title),
+            ("input[name='app_title']", app_title),
+            ("input#app_shortname", app_shortname),
+            ("input[name='app_shortname']", app_shortname),
+            ("input#app_url", "https://example.com"),
+            ("input[name='app_url']", "https://example.com"),
+            ("textarea#app_desc", "Telegram desktop app"),
+            ("textarea[name='app_desc']", "Telegram desktop app"),
+        ]
+
+        for selector, value in field_values:
+            try:
+                locator = my_page.locator(selector)
+                if locator.count() <= 0:
+                    continue
+                item = locator.first
+                if not item.is_visible(timeout=1200):
+                    continue
+                item.scroll_into_view_if_needed(timeout=3000)
+                item.fill(value, timeout=7000)
+                print(f"已填写创建应用字段：{selector}")
+            except Exception:
+                continue
+
+    def choose_desktop_platform() -> None:
+        desktop_radio = my_page.locator("input[name='app_platform'][value='desktop']").first
+        try:
+            if desktop_radio.count() > 0:
+                desktop_radio.check(timeout=10000, force=True)
+                print("已选择应用平台：desktop / 桌面。")
+                return
+        except Exception as e:
             current_state = detect_mytelegram_apps_page_state(my_page)
             if current_state == "app_config":
-                print("当前页面已切换到应用程序配置页，不再选择平台。")
-                return "app_config", app_title, app_shortname
-            raise RuntimeError("创建应用页面没有找到 desktop 平台单选框")
-    except Exception as e:
+                print("选择 desktop 时发现页面已经是应用程序配置页，继续读取 api_id/api_hash。")
+                return
+            print(f"选择 desktop 单选框失败，继续尝试文字标签：{e}")
+
+        try:
+            desktop_label = my_page.get_by_text(re.compile(r"^(desktop|桌面)$", re.IGNORECASE)).first
+            if desktop_label.is_visible(timeout=2000):
+                desktop_label.click(timeout=5000, force=True)
+                print("已通过文字标签选择应用平台：desktop / 桌面。")
+                return
+        except Exception:
+            pass
+
         current_state = detect_mytelegram_apps_page_state(my_page)
         if current_state == "app_config":
-            print("选择 desktop 时发现页面已经是应用程序配置页，继续读取 api_id/api_hash。")
+            print("当前页面已切换到应用程序配置页，不再选择平台。")
+            return
+        raise RuntimeError("创建应用页面没有找到 desktop 平台单选框")
+
+    last_state = state
+    last_error_text = ""
+    last_app_title = ""
+    last_app_shortname = ""
+
+    for create_attempt in range(1, 4):
+        state = detect_mytelegram_apps_page_state(my_page)
+        if state == "bot_id_required":
+            recover_mytelegram_from_bot_id_required(my_page, f"创建应用尝试 {create_attempt}/3 前")
+            try:
+                my_page.goto("https://my.telegram.org/apps", wait_until="commit", timeout=30000)
+            except Exception:
+                pass
+            my_page.wait_for_timeout(7000)
+            state = detect_mytelegram_apps_page_state(my_page)
+
+        if state == "app_config":
+            return "app_config", last_app_title, last_app_shortname
+        if state != "create_app":
+            return state, last_app_title, last_app_shortname
+
+        app_shortname = generate_mytelegram_app_shortname(10)
+        app_title = app_shortname
+        last_app_title = app_title
+        last_app_shortname = app_shortname
+        print(f"检测到未创建应用程序页面，准备创建应用：{app_title}，尝试 {create_attempt}/3")
+
+        title_input = my_page.locator("input#app_title").first
+        shortname_input = my_page.locator("input#app_shortname").first
+        title_input.wait_for(state="visible", timeout=30000)
+        shortname_input.wait_for(state="visible", timeout=30000)
+
+        fill_optional_create_fields(app_title, app_shortname)
+        choose_desktop_platform()
+
+        current_state = detect_mytelegram_apps_page_state(my_page)
+        if current_state == "app_config":
             return "app_config", app_title, app_shortname
-        raise RuntimeError(f"选择 desktop 平台失败：{e}")
 
-    save_button = my_page.locator("button#app_save_btn").first
-    save_button.wait_for(state="visible", timeout=15000)
-    save_button.click(timeout=15000)
-    print("已点击创建应用程序按钮，等待应用程序配置页面。")
+        save_button = my_page.locator("button#app_save_btn").first
+        save_button.wait_for(state="visible", timeout=15000)
+        try:
+            save_button.scroll_into_view_if_needed(timeout=5000)
+        except Exception:
+            pass
 
-    state = wait_for_mytelegram_apps_state(
-        my_page,
-        {"app_config", "create_app"},
-        "创建应用程序后等待应用程序配置页面",
-        checks_per_round=5,
-        max_refresh_rounds=3,
-        interval_ms=5000,
+        try:
+            save_button.click(timeout=15000)
+        except Exception:
+            save_button.click(timeout=15000, force=True)
+
+        print("已点击创建应用程序按钮，等待应用程序配置页面。")
+        my_page.wait_for_timeout(7000)
+
+        # 修复点：创建后只能等待 app_config，不能把 create_app 当成成功目标。
+        last_state = wait_for_mytelegram_apps_state(
+            my_page,
+            {"app_config"},
+            "创建应用程序后等待应用程序配置页面",
+            checks_per_round=8,
+            max_refresh_rounds=4,
+            interval_ms=5000,
+        )
+
+        if last_state == "app_config":
+            return "app_config", app_title, app_shortname
+
+        current_state = detect_mytelegram_apps_page_state(my_page)
+        if current_state == "app_config":
+            return "app_config", app_title, app_shortname
+
+        last_error_text = collect_create_page_error_text()
+        print(f"创建应用后仍未进入配置页，当前状态：{current_state}，页面提示：{last_error_text[:500]}")
+        try:
+            dump_debug_html(my_page, f"mytelegram_create_app_failed_attempt_{create_attempt}")
+        except Exception:
+            pass
+
+        if create_attempt < 3:
+            print("准备重新打开 /apps 并换一个 shortname 再创建一次。")
+            try:
+                my_page.goto("https://my.telegram.org/apps", wait_until="commit", timeout=30000)
+            except Exception:
+                try:
+                    my_page.reload(wait_until="commit", timeout=15000)
+                except Exception:
+                    pass
+            my_page.wait_for_timeout(7000)
+
+    raise RuntimeError(
+        f"创建应用程序后没有进入应用程序配置页面，当前状态：{last_state}，"
+        f"页面提示：{last_error_text[:500]}"
     )
-    if state != "app_config":
-        raise RuntimeError(f"创建应用程序后没有进入应用程序配置页面，当前状态：{state}")
-
-    return state, app_title, app_shortname
-
 
 def extract_mytelegram_api_credentials(my_page) -> tuple[str, str]:
     print("正在读取 my.telegram.org 应用 api_id 和 api_hash...")
@@ -3000,7 +3364,15 @@ def run_mytelegram_org_flow_after_777000(telegram_page, phone: str) -> bool:
 
     my_page = telegram_page.context.new_page()
     try:
-        already_password_page = fill_mytelegram_phone_without_submit(my_page, phone)
+        mytelegram_page_state = fill_mytelegram_phone_without_submit(my_page, phone)
+
+        if mytelegram_page_state == "logged_in_home":
+            api_csv_path = run_mytelegram_api_development_tools_flow(my_page, phone)
+            set_last_automation_result("mytelegram_done", f"my.telegram.org 已登录并导出 api_id/api_hash：{api_csv_path}")
+            print("my.telegram.org 已登录首页，API 开发工具流程已自动完成。")
+            return True
+
+        already_password_page = bool(mytelegram_page_state)
         if not already_password_page:
             try:
                 my_page.bring_to_front()

@@ -149,7 +149,6 @@ class TgapipldcRunnerService:
 
         command = [
             sys.executable,
-            "-u",
             str(script_path),
             *(extra_args or []),
         ]
@@ -230,7 +229,6 @@ class TgapipldcRunnerService:
             env["PYTHONPATH"] = src_dir
 
         env["PYTHONIOENCODING"] = "utf-8"
-        env["PYTHONUNBUFFERED"] = "1"
 
         return env
 
