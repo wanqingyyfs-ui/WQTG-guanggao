@@ -16,7 +16,7 @@ from playwright.sync_api import sync_playwright
 from proxy_utils import parse_raw_proxy
 
 
-SCRIPT_VERSION = "official-state-machine-067-mytelegram-done-success"
+SCRIPT_VERSION = "official-state-machine-064-mytelegram-phone-first"
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 ACCOUNT_PROXY_MAP_FILE = BASE_DIR / "data" / "account_proxy_map.csv"
@@ -2369,146 +2369,6 @@ def snapshot_to_order(snapshot: dict[str, str]) -> tuple[int, int, int]:
     return timestamp, message_id, dom_index
 
 
-
-
-
-
-# ===== mytelegram code full-symbol override v8 begin =====
-def normalize_candidate_code(raw_code: str) -> str:
-    """
-    保留验证码主体里的所有符号字符。
-    只清理不可见字符、首尾空白、首尾包裹引号/括号。
-    不再把 _、-、&、*、!、#、%、@、$ 等符号截断。
-    """
-    code = unescape(raw_code or "")
-    code = code.replace("\u200b", "").replace("\u200c", "").replace("\u200d", "")
-    code = code.strip()
-
-    wrapping_pairs = [
-        ('"', '"'),
-        ("'", "'"),
-        ("`", "`"),
-        ("“", "”"),
-        ("‘", "’"),
-        ("(", ")"),
-        ("[", "]"),
-        ("{", "}"),
-        ("<", ">"),
-    ]
-
-    changed = True
-    while changed and len(code) >= 2:
-        changed = False
-        for left, right in wrapping_pairs:
-            if code.startswith(left) and code.endswith(right):
-                code = code[1:-1].strip()
-                changed = True
-
-    # Telegram 常见纯数字码后面会跟英文句号：Login code: 91906. Do not...
-    # 这里只处理纯数字验证码后面被句子句号粘住的情况；带符号验证码不删符号。
-    if re.fullmatch(r"\d{5,8}\.", code):
-        code = code[:-1]
-
-    return code
-
-
-def is_valid_candidate_code(code: str) -> bool:
-    """
-    验证码允许包含任意非空白字符，包括：
-    _ - & * ! # % @ $ ^ = + : . , ? / \\ ~ 等。
-    """
-    if not code:
-        return False
-    if len(code) < 4 or len(code) > 128:
-        return False
-    if re.search(r"\s", code):
-        return False
-
-    lowered = code.lower()
-    blocked_exact = {
-        "code", "login", "password", "telegram", "my.telegram.org", "https", "http", "www",
-        "from", "this", "your", "verification", "confirmation", "attempt", "account",
-        "website", "browser", "message", "messages", "copied", "clipboard", "copy",
-        "button", "sign", "next", "signin",
-    }
-
-    if lowered in blocked_exact:
-        return False
-    if lowered.startswith("http") or "://" in lowered:
-        return False
-    if re.fullmatch(r"[\u4e00-\u9fff]+", code):
-        return False
-
-    has_digit = bool(re.search(r"\d", code))
-    has_upper = bool(re.search(r"[A-Z]", code))
-    has_lower = bool(re.search(r"[a-z]", code))
-    has_symbol = bool(re.search(r"[^A-Za-z0-9]", code))
-
-    if has_digit:
-        return True
-    if has_symbol and (has_upper or has_lower or len(code) >= 4):
-        return True
-    if has_upper and has_lower and len(code) >= 6:
-        return True
-
-    return False
-
-
-def extract_candidate_codes_from_text(text: str) -> list[str]:
-    """
-    从 #777000 消息里提取验证码。
-
-    核心规则：
-    - 明确匹配 login code / confirmation code / verification code 后面的完整非空白字符串；
-    - 不限制为字母数字；
-    - 保留验证码里的所有符号；
-    - cRSvs6_F53g 会完整返回 cRSvs6_F53g；
-    - abc&*!#*%%XYZ 会完整返回 abc&*!#*%%XYZ。
-    """
-    text = unescape(text or "")
-    text = text.replace("\u200b", "").replace("\u200c", "").replace("\u200d", "")
-
-    candidates: list[str] = []
-
-    def append(raw: str):
-        code = normalize_candidate_code(raw)
-        if is_valid_candidate_code(code) and code not in candidates:
-            candidates.append(code)
-
-    full_token = r"([^\s]+)"
-
-    priority_patterns = [
-        rf"(?:this\s+is\s+your\s+login\s+code|your\s+login\s+code|login\s+code)\s*[:：]\s*{full_token}",
-        rf"(?:this\s+is\s+your\s+confirmation\s+code|your\s+confirmation\s+code|confirmation\s+code)\s*[:：]\s*{full_token}",
-        rf"(?:this\s+is\s+your\s+verification\s+code|your\s+verification\s+code|verification\s+code)\s*[:：]\s*{full_token}",
-        rf"(?:my\.telegram\.org\s+code|my\.telegram\.org\s+login\s+code)\s*[:：]\s*{full_token}",
-        rf"(?:验证码|登录码|登入码|確認碼|驗證碼|代碼|コード)\s*[:：]\s*{full_token}",
-    ]
-
-    for pattern in priority_patterns:
-        for match in re.finditer(pattern, text, re.IGNORECASE):
-            append(match.group(1))
-        if candidates:
-            return candidates
-
-    code_label = r"(?:login\s*code|verification\s*code|confirmation\s*code|my\.telegram\.org\s*code|code|password|验证码|登录码|登入码|確認碼|驗證碼|代碼|コード)"
-    secondary_patterns = [
-        rf"{code_label}[^\S\r\n]*[:：]?[^\S\r\n]*{full_token}",
-        rf"{code_label}[\s\S]{{0,160}}?{full_token}",
-        rf"[`'\"“”‘’]([^\s`'\"“”‘’]{{4,128}})[`'\"“”‘’]",
-        r"\b(\d{5,8})\b",
-    ]
-
-    for pattern in secondary_patterns:
-        for match in re.finditer(pattern, text, re.IGNORECASE):
-            append(match.group(1))
-        if candidates:
-            return candidates
-
-    return candidates
-# ===== mytelegram code full-symbol override v8 end =====
-
-
 def wait_for_mytelegram_code_from_777000(page, before_latest_message: dict[str, str], timeout: int = 120000) -> str:
     """
     回到 #777000 后读取 my.telegram.org 验证码。
@@ -3721,7 +3581,7 @@ def auto_start_telegram_phone_login(page, phone: str, country: str = "", yanzhen
             print("Telegram 已登录，已跳过登录流程。")
             print("my.telegram.org 自动流程状态：" + ("已完成" if mytelegram_done else "未完成或需人工检查"))
             print("-" * 80)
-            return mytelegram_done
+            return
 
     print("当前没有确认已登录/#777000，进入未登录状态机。")
     deadline = time.time() + 300
@@ -3997,12 +3857,6 @@ def open_telegram_web_for_login(account: dict[str, str]) -> tuple[bool, str]:
                 dump_debug_html(telegram_page, "telegram_auto_flow_failed")
 
             automation_note = get_last_automation_note()
-            automation_note_text = str(automation_note or "")
-            automation_indicates_api_done = (
-                "mytelegram_done" in automation_note_text
-                or "已登录并导出 api_id/api_hash" in automation_note_text
-                or "API 导出成功" in automation_note_text
-            )
             if auto_flow_error:
                 telegram_status = "telegram_auto_flow_failed"
                 note_parts = [f"auto_flow_error: {auto_flow_error}"]
@@ -4010,7 +3864,7 @@ def open_telegram_web_for_login(account: dict[str, str]) -> tuple[bool, str]:
                     note_parts.append(automation_note)
                 note = " | ".join(note_parts)
                 success = False
-            elif mytelegram_done or automation_indicates_api_done:
+            elif mytelegram_done:
                 telegram_status = "api_export_success"
                 note = automation_note or "my.telegram.org API 导出成功"
                 success = True

@@ -16,7 +16,7 @@ from playwright.sync_api import sync_playwright
 from proxy_utils import parse_raw_proxy
 
 
-SCRIPT_VERSION = "official-state-machine-067-mytelegram-done-success"
+SCRIPT_VERSION = "official-state-machine-063-force-mytelegram-phone-input"
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 ACCOUNT_PROXY_MAP_FILE = BASE_DIR / "data" / "account_proxy_map.csv"
@@ -2369,146 +2369,6 @@ def snapshot_to_order(snapshot: dict[str, str]) -> tuple[int, int, int]:
     return timestamp, message_id, dom_index
 
 
-
-
-
-
-# ===== mytelegram code full-symbol override v8 begin =====
-def normalize_candidate_code(raw_code: str) -> str:
-    """
-    保留验证码主体里的所有符号字符。
-    只清理不可见字符、首尾空白、首尾包裹引号/括号。
-    不再把 _、-、&、*、!、#、%、@、$ 等符号截断。
-    """
-    code = unescape(raw_code or "")
-    code = code.replace("\u200b", "").replace("\u200c", "").replace("\u200d", "")
-    code = code.strip()
-
-    wrapping_pairs = [
-        ('"', '"'),
-        ("'", "'"),
-        ("`", "`"),
-        ("“", "”"),
-        ("‘", "’"),
-        ("(", ")"),
-        ("[", "]"),
-        ("{", "}"),
-        ("<", ">"),
-    ]
-
-    changed = True
-    while changed and len(code) >= 2:
-        changed = False
-        for left, right in wrapping_pairs:
-            if code.startswith(left) and code.endswith(right):
-                code = code[1:-1].strip()
-                changed = True
-
-    # Telegram 常见纯数字码后面会跟英文句号：Login code: 91906. Do not...
-    # 这里只处理纯数字验证码后面被句子句号粘住的情况；带符号验证码不删符号。
-    if re.fullmatch(r"\d{5,8}\.", code):
-        code = code[:-1]
-
-    return code
-
-
-def is_valid_candidate_code(code: str) -> bool:
-    """
-    验证码允许包含任意非空白字符，包括：
-    _ - & * ! # % @ $ ^ = + : . , ? / \\ ~ 等。
-    """
-    if not code:
-        return False
-    if len(code) < 4 or len(code) > 128:
-        return False
-    if re.search(r"\s", code):
-        return False
-
-    lowered = code.lower()
-    blocked_exact = {
-        "code", "login", "password", "telegram", "my.telegram.org", "https", "http", "www",
-        "from", "this", "your", "verification", "confirmation", "attempt", "account",
-        "website", "browser", "message", "messages", "copied", "clipboard", "copy",
-        "button", "sign", "next", "signin",
-    }
-
-    if lowered in blocked_exact:
-        return False
-    if lowered.startswith("http") or "://" in lowered:
-        return False
-    if re.fullmatch(r"[\u4e00-\u9fff]+", code):
-        return False
-
-    has_digit = bool(re.search(r"\d", code))
-    has_upper = bool(re.search(r"[A-Z]", code))
-    has_lower = bool(re.search(r"[a-z]", code))
-    has_symbol = bool(re.search(r"[^A-Za-z0-9]", code))
-
-    if has_digit:
-        return True
-    if has_symbol and (has_upper or has_lower or len(code) >= 4):
-        return True
-    if has_upper and has_lower and len(code) >= 6:
-        return True
-
-    return False
-
-
-def extract_candidate_codes_from_text(text: str) -> list[str]:
-    """
-    从 #777000 消息里提取验证码。
-
-    核心规则：
-    - 明确匹配 login code / confirmation code / verification code 后面的完整非空白字符串；
-    - 不限制为字母数字；
-    - 保留验证码里的所有符号；
-    - cRSvs6_F53g 会完整返回 cRSvs6_F53g；
-    - abc&*!#*%%XYZ 会完整返回 abc&*!#*%%XYZ。
-    """
-    text = unescape(text or "")
-    text = text.replace("\u200b", "").replace("\u200c", "").replace("\u200d", "")
-
-    candidates: list[str] = []
-
-    def append(raw: str):
-        code = normalize_candidate_code(raw)
-        if is_valid_candidate_code(code) and code not in candidates:
-            candidates.append(code)
-
-    full_token = r"([^\s]+)"
-
-    priority_patterns = [
-        rf"(?:this\s+is\s+your\s+login\s+code|your\s+login\s+code|login\s+code)\s*[:：]\s*{full_token}",
-        rf"(?:this\s+is\s+your\s+confirmation\s+code|your\s+confirmation\s+code|confirmation\s+code)\s*[:：]\s*{full_token}",
-        rf"(?:this\s+is\s+your\s+verification\s+code|your\s+verification\s+code|verification\s+code)\s*[:：]\s*{full_token}",
-        rf"(?:my\.telegram\.org\s+code|my\.telegram\.org\s+login\s+code)\s*[:：]\s*{full_token}",
-        rf"(?:验证码|登录码|登入码|確認碼|驗證碼|代碼|コード)\s*[:：]\s*{full_token}",
-    ]
-
-    for pattern in priority_patterns:
-        for match in re.finditer(pattern, text, re.IGNORECASE):
-            append(match.group(1))
-        if candidates:
-            return candidates
-
-    code_label = r"(?:login\s*code|verification\s*code|confirmation\s*code|my\.telegram\.org\s*code|code|password|验证码|登录码|登入码|確認碼|驗證碼|代碼|コード)"
-    secondary_patterns = [
-        rf"{code_label}[^\S\r\n]*[:：]?[^\S\r\n]*{full_token}",
-        rf"{code_label}[\s\S]{{0,160}}?{full_token}",
-        rf"[`'\"“”‘’]([^\s`'\"“”‘’]{{4,128}})[`'\"“”‘’]",
-        r"\b(\d{5,8})\b",
-    ]
-
-    for pattern in secondary_patterns:
-        for match in re.finditer(pattern, text, re.IGNORECASE):
-            append(match.group(1))
-        if candidates:
-            return candidates
-
-    return candidates
-# ===== mytelegram code full-symbol override v8 end =====
-
-
 def wait_for_mytelegram_code_from_777000(page, before_latest_message: dict[str, str], timeout: int = 120000) -> str:
     """
     回到 #777000 后读取 my.telegram.org 验证码。
@@ -2805,147 +2665,6 @@ def wait_for_mytelegram_phone_submit_feedback(my_page, checks_per_round: int = 5
         "my.telegram.org 提交手机号后 3x5 仍没有进入验证码页，也没有检测到明确限制提示。"
         f"页面片段：{last_snapshot}"
     )
-
-
-# ===== mytelegram phone-first override v6 begin =====
-def mytelegram_has_visible_input(my_page) -> tuple[bool, str]:
-    """
-    my.telegram.org 判断页面是否可用，必须先看输入框。
-    只要有手机号输入框或验证码输入框，就是正确页面，不允许当 bot_id required 错误页处理。
-    """
-    for selector, label in [
-        ("input#my_login_phone", "手机号输入框"),
-        ("input[name='phone']", "手机号输入框"),
-        ("input[type='tel']", "手机号输入框"),
-        ("input#my_password", "验证码输入框"),
-        ("input[name='password']", "验证码输入框"),
-    ]:
-        try:
-            item = my_page.locator(selector).first
-            if item.is_visible(timeout=800):
-                return True, label
-        except Exception:
-            pass
-    return False, ""
-
-
-def is_mytelegram_bot_id_required_page(my_page) -> bool:
-    """
-    修复重点：
-    my.telegram.org 页面里只要存在手机号/验证码输入框，就不是错误页。
-    不能因为 body 里出现 bot_id required 就跳转恢复。
-    """
-    has_input, label = mytelegram_has_visible_input(my_page)
-    if has_input:
-        print(f"my.telegram.org 页面检测到{label}，忽略 bot_id required 文本，按正常登录页处理。")
-        return False
-
-    text = mytelegram_body_text(my_page, timeout=1500).lower()
-    url = ""
-    try:
-        url = my_page.url or ""
-    except Exception:
-        url = ""
-
-    clean_text = text.strip()
-    if not clean_text:
-        return False
-
-    return "bot_id required" in clean_text or ("/auth" in url and clean_text == "bot_id required")
-
-
-def recover_mytelegram_from_bot_id_required(my_page, stage: str = "") -> bool:
-    """
-    恢复前也先看输入框。
-    如果已经有手机号/验证码输入框，直接返回 True，不跳转。
-    """
-    has_input, label = mytelegram_has_visible_input(my_page)
-    if has_input:
-        print(f"{stage + '：' if stage else ''}my.telegram.org 已有{label}，不执行 bot_id required 恢复。")
-        return True
-
-    if not is_mytelegram_bot_id_required_page(my_page):
-        return False
-
-    label = f"{stage}：" if stage else ""
-    print(f"{label}检测到 my.telegram.org 错误页面 bot_id required，重新打开官方入口。")
-    try:
-        dump_debug_html(my_page, "mytelegram_bot_id_required")
-    except Exception:
-        pass
-
-    # 先回官方入口，不要优先 /apps。/apps 未登录时更容易绕回错误 auth 分支。
-    for target_url in [MY_TELEGRAM_URL, "https://my.telegram.org/"]:
-        try:
-            my_page.goto(target_url, wait_until="domcontentloaded", timeout=60000)
-            my_page.wait_for_timeout(4000)
-
-            has_input, input_label = mytelegram_has_visible_input(my_page)
-            if has_input:
-                print(f"已从 bot_id required 恢复到正常页面，找到{input_label}：{target_url}")
-                return True
-
-            if not is_mytelegram_bot_id_required_page(my_page):
-                print(f"已从 bot_id required 恢复到：{target_url}")
-                return True
-        except Exception as e:
-            print(f"恢复 my.telegram.org 页面失败：{target_url}，{e}")
-
-    return False
-
-
-def wait_for_mytelegram_login_page(my_page, timeout: int = 180000) -> bool:
-    print("正在打开 my.telegram.org，加载不成功会重新加载...")
-    deadline = time.time() + timeout / 1000
-    attempt = 1
-
-    while time.time() < deadline:
-        try:
-            print(f"第 {attempt} 次加载 my.telegram.org...")
-            my_page.goto(MY_TELEGRAM_URL, wait_until="domcontentloaded", timeout=60000)
-        except Exception as e:
-            print(f"my.telegram.org 加载失败：{e}")
-            try:
-                my_page.goto(MY_TELEGRAM_URL, wait_until="commit", timeout=60000)
-            except Exception:
-                pass
-
-        my_page.wait_for_timeout(3000)
-
-        # 第一优先级：有手机号/验证码输入框就是正确页面，直接返回。
-        has_input, input_label = mytelegram_has_visible_input(my_page)
-        if has_input:
-            print(f"my.telegram.org 已加载成功，找到{input_label}。")
-            return True
-
-        # 第二优先级：限制提示。
-        assert_mytelegram_not_too_many_tries(my_page, "my.telegram.org 加载后检测到限制")
-
-        # 第三优先级：没有输入框时，才处理 bot_id required。
-        if is_mytelegram_bot_id_required_page(my_page):
-            recovered = recover_mytelegram_from_bot_id_required(my_page, "加载 my.telegram.org")
-            if recovered:
-                has_input, input_label = mytelegram_has_visible_input(my_page)
-                if has_input:
-                    print(f"my.telegram.org 恢复后找到{input_label}。")
-                    return True
-            attempt += 1
-            continue
-
-        # 第四优先级：确实是已登录首页。
-        try:
-            body_text = mytelegram_body_text(my_page, timeout=1500).lower()
-            if "api development tools" in body_text or "delete account" in body_text or "log out" in body_text:
-                print("my.telegram.org 已是登录后的首页。")
-                return True
-        except Exception:
-            pass
-
-        attempt += 1
-
-    raise TimeoutError("my.telegram.org 在限定时间内没有加载到手机号页、验证码页或已登录首页")
-# ===== mytelegram phone-first override v6 end =====
-
 
 def fill_mytelegram_phone_without_submit(my_page, phone: str) -> bool | str:
     wait_for_mytelegram_login_page(my_page, timeout=180000)
@@ -3721,7 +3440,7 @@ def auto_start_telegram_phone_login(page, phone: str, country: str = "", yanzhen
             print("Telegram 已登录，已跳过登录流程。")
             print("my.telegram.org 自动流程状态：" + ("已完成" if mytelegram_done else "未完成或需人工检查"))
             print("-" * 80)
-            return mytelegram_done
+            return
 
     print("当前没有确认已登录/#777000，进入未登录状态机。")
     deadline = time.time() + 300
@@ -3997,12 +3716,6 @@ def open_telegram_web_for_login(account: dict[str, str]) -> tuple[bool, str]:
                 dump_debug_html(telegram_page, "telegram_auto_flow_failed")
 
             automation_note = get_last_automation_note()
-            automation_note_text = str(automation_note or "")
-            automation_indicates_api_done = (
-                "mytelegram_done" in automation_note_text
-                or "已登录并导出 api_id/api_hash" in automation_note_text
-                or "API 导出成功" in automation_note_text
-            )
             if auto_flow_error:
                 telegram_status = "telegram_auto_flow_failed"
                 note_parts = [f"auto_flow_error: {auto_flow_error}"]
@@ -4010,7 +3723,7 @@ def open_telegram_web_for_login(account: dict[str, str]) -> tuple[bool, str]:
                     note_parts.append(automation_note)
                 note = " | ".join(note_parts)
                 success = False
-            elif mytelegram_done or automation_indicates_api_done:
+            elif mytelegram_done:
                 telegram_status = "api_export_success"
                 note = automation_note or "my.telegram.org API 导出成功"
                 success = True

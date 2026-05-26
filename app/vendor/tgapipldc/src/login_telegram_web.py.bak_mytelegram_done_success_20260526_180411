@@ -16,7 +16,7 @@ from playwright.sync_api import sync_playwright
 from proxy_utils import parse_raw_proxy
 
 
-SCRIPT_VERSION = "official-state-machine-067-mytelegram-done-success"
+SCRIPT_VERSION = "official-state-machine-066-code-full-symbols-v8"
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 ACCOUNT_PROXY_MAP_FILE = BASE_DIR / "data" / "account_proxy_map.csv"
@@ -3721,7 +3721,7 @@ def auto_start_telegram_phone_login(page, phone: str, country: str = "", yanzhen
             print("Telegram 已登录，已跳过登录流程。")
             print("my.telegram.org 自动流程状态：" + ("已完成" if mytelegram_done else "未完成或需人工检查"))
             print("-" * 80)
-            return mytelegram_done
+            return
 
     print("当前没有确认已登录/#777000，进入未登录状态机。")
     deadline = time.time() + 300
@@ -3997,12 +3997,6 @@ def open_telegram_web_for_login(account: dict[str, str]) -> tuple[bool, str]:
                 dump_debug_html(telegram_page, "telegram_auto_flow_failed")
 
             automation_note = get_last_automation_note()
-            automation_note_text = str(automation_note or "")
-            automation_indicates_api_done = (
-                "mytelegram_done" in automation_note_text
-                or "已登录并导出 api_id/api_hash" in automation_note_text
-                or "API 导出成功" in automation_note_text
-            )
             if auto_flow_error:
                 telegram_status = "telegram_auto_flow_failed"
                 note_parts = [f"auto_flow_error: {auto_flow_error}"]
@@ -4010,7 +4004,7 @@ def open_telegram_web_for_login(account: dict[str, str]) -> tuple[bool, str]:
                     note_parts.append(automation_note)
                 note = " | ".join(note_parts)
                 success = False
-            elif mytelegram_done or automation_indicates_api_done:
+            elif mytelegram_done:
                 telegram_status = "api_export_success"
                 note = automation_note or "my.telegram.org API 导出成功"
                 success = True
