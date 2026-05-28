@@ -36,15 +36,6 @@ ACCOUNT_PROXY_MAP_FIELDS = [
     "note",
 ]
 
-USABLE_PROXY_REQUIRED_FIELDS = {
-    "raw_proxy",
-    "masked_proxy",
-    "exit_ip",
-    "assigned_phone",
-    "status",
-    "note",
-}
-
 
 @dataclass(frozen=True)
 class AccountBindResult:
@@ -56,29 +47,13 @@ class AccountBindResult:
 
 class TgapipldcAccountBindService:
     """
-    tgapipldc 账号代理绑定服务。
+    tgapipldc 动态轮换代理账号运行表生成服务。
 
-    对应原命令：
-
-        python src\\assign_proxies.py
-
-    输入：
-    - data/accounts.csv
-      当前 WQTG 面板固定格式：
-      phone,country,profile_dir,status,yanzheng
-
-    - data/usable_proxies.csv
-      来自 TgapipldcProxyService.build_proxy_pool()
-
-    输出：
-    - data/account_proxy_map.csv
-
-    绑定规则：
-    - 只读取 accounts.csv 中 status 属于 pending/proxy_required/new/unused/空 的账号；
-    - 只读取 usable_proxies.csv 中 status == unused 的代理；
-    - 按顺序一对一绑定；
-    - 可用代理少于账号时，只绑定前 N 个账号；
-    - 输出字段兼容 tgapipldc 原 login_telegram_web.py。
+    当前规则已经改为动态轮换代理模式：
+    - accounts.csv 仍然提供账号、国家、profile_dir、status、yanzheng；
+    - proxies.csv 只允许配置一条 raw_proxy；
+    - 生成 account_proxy_map.csv 时，每个账号都写入同一条动态轮换代理；
+    - 不再依赖 usable_proxies.csv，也不再要求一个账号绑定一条独立代理。
     """
 
     def __init__(self, workspace_service: TgapipldcWorkspaceService | None = None):
@@ -87,14 +62,13 @@ class TgapipldcAccountBindService:
 
     def assign_accounts_to_proxies(self) -> AccountBindResult:
         accounts = self.read_pending_accounts()
-        proxies = self.read_usable_proxies()
+        proxy = self.read_dynamic_proxy()
 
-        assign_count = min(len(accounts), len(proxies))
         rows: list[dict[str, str]] = []
 
-        for index in range(assign_count):
-            account = accounts[index]
-            proxy = proxies[index]
+        for account in accounts:
+            account_note = self._clean(account.get("note"))
+            note_parts = [part for part in [account_note, "shared_dynamic_proxy"] if part]
 
             rows.append(
                 {
@@ -108,9 +82,9 @@ class TgapipldcAccountBindService:
                     "yanzheng": account["yanzheng"],
                     "raw_proxy": proxy["raw_proxy"],
                     "masked_proxy": proxy["masked_proxy"],
-                    "exit_ip": proxy["exit_ip"],
-                    "status": "proxy_assigned",
-                    "note": account["note"],
+                    "exit_ip": "",
+                    "status": "dynamic_proxy_assigned",
+                    "note": " | ".join(note_parts),
                 }
             )
 
@@ -118,7 +92,7 @@ class TgapipldcAccountBindService:
 
         return AccountBindResult(
             account_count=len(accounts),
-            proxy_count=len(proxies),
+            proxy_count=1,
             assigned_count=len(rows),
             account_proxy_map_path=self.workspace.account_proxy_map_csv_path,
         )
@@ -155,51 +129,38 @@ class TgapipldcAccountBindService:
 
         return accounts
 
-    def read_usable_proxies(self) -> list[dict[str, str]]:
-        path = self.workspace.usable_proxies_csv_path
+    def read_dynamic_proxy(self) -> dict[str, str]:
+        path = self.workspace.proxies_csv_path
 
         if not path.exists():
-            raise FileNotFoundError(f"找不到可用代理文件：{path}")
+            raise FileNotFoundError(f"找不到动态代理文件：{path}")
 
-        proxies: list[dict[str, str]] = []
-        seen_exit_ips: set[str] = set()
+        raw_proxies: list[str] = []
 
         with path.open("r", encoding="utf-8-sig", newline="") as file:
             reader = csv.DictReader(file)
-            current_fields = set(reader.fieldnames or [])
-            missing_fields = USABLE_PROXY_REQUIRED_FIELDS - current_fields
+            fieldnames = set(reader.fieldnames or [])
 
-            if missing_fields:
-                raise ValueError(f"usable_proxies.csv 缺少字段：{missing_fields}")
+            if "raw_proxy" not in fieldnames:
+                raise ValueError("proxies.csv 第一行表头必须是：raw_proxy")
 
             for row in reader:
-                status = self._clean(row.get("status"))
                 raw_proxy = self._clean(row.get("raw_proxy"))
-                masked_proxy = self._clean(row.get("masked_proxy"))
-                exit_ip = self._clean(row.get("exit_ip"))
+                if raw_proxy:
+                    raw_proxies.append(raw_proxy)
 
-                if status != "unused":
-                    continue
-                if not raw_proxy or not exit_ip:
-                    continue
-                if exit_ip in seen_exit_ips:
-                    continue
+        if not raw_proxies:
+            raise ValueError("proxies.csv 里没有动态轮换代理")
 
-                seen_exit_ips.add(exit_ip)
+        if len(raw_proxies) > 1:
+            raise ValueError("当前动态轮换代理模式只允许配置一条 raw_proxy，请删除多余代理后重新保存")
 
-                proxies.append(
-                    {
-                        "raw_proxy": raw_proxy,
-                        "masked_proxy": masked_proxy,
-                        "exit_ip": exit_ip,
-                        "status": status,
-                    }
-                )
-
-        if not proxies:
-            raise ValueError("usable_proxies.csv 里没有可分配代理")
-
-        return proxies
+        raw_proxy = raw_proxies[0]
+        masked_proxy = self._mask_raw_proxy(raw_proxy)
+        return {
+            "raw_proxy": raw_proxy,
+            "masked_proxy": masked_proxy,
+        }
 
     def _normalize_account_row(self, row: dict[str, str]) -> dict[str, str]:
         phone = self._clean(row.get("phone"))
@@ -280,3 +241,42 @@ class TgapipldcAccountBindService:
         if not digits:
             return ""
         return f"+{digits}"
+
+    @staticmethod
+    def _mask_raw_proxy(raw_proxy: str) -> str:
+        normalized_proxy = str(raw_proxy or "").strip()
+
+        if normalized_proxy.startswith("http://"):
+            normalized_proxy = normalized_proxy[len("http://"):]
+
+        if normalized_proxy.startswith("https://"):
+            normalized_proxy = normalized_proxy[len("https://"):]
+
+        if "@" not in normalized_proxy:
+            raise ValueError(f"动态代理格式错误，缺少 @：{normalized_proxy}")
+
+        auth_part, host_part = normalized_proxy.rsplit("@", 1)
+
+        if ":" not in auth_part:
+            raise ValueError(f"动态代理格式错误，账号密码部分缺少冒号：{normalized_proxy}")
+
+        username, password = auth_part.split(":", 1)
+
+        if ":" not in host_part:
+            raise ValueError(f"动态代理格式错误，host 端口部分缺少冒号：{normalized_proxy}")
+
+        host, port_text = host_part.rsplit(":", 1)
+
+        if not username:
+            raise ValueError("动态代理用户名为空")
+        if not password:
+            raise ValueError("动态代理密码为空")
+        if not host:
+            raise ValueError("动态代理 host 为空")
+
+        try:
+            int(port_text)
+        except ValueError as exc:
+            raise ValueError(f"动态代理端口不是数字：{port_text}") from exc
+
+        return f"{username}:******@{host}:{port_text}"

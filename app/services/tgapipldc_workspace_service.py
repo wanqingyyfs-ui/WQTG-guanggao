@@ -94,18 +94,10 @@ class TgapipldcWorkspaceService:
     """
     WQTG 内置 tgapipldc 工作目录服务。
 
-    当前文件只负责：
-    1. 定位 app/vendor/tgapipldc 工作目录；
-    2. 确保 src/data/csv/logs/profiles/assets/profile_photos 目录存在；
-    3. 管理常用 CSV / JSON 路径；
-    4. 按“保留第一行表头，清空第二行开始旧数据，再写入新数据”的规则覆盖 accounts.csv / proxies.csv；
-    5. 管理账号资料维护配置、图片库、结果 CSV。
-
-    注意：
-    - 这里不调用 Playwright；
-    - 这里不调用 tgapipldc 原脚本；
-    - 这里不依赖 PySide6；
-    - GUI 面板按钮通过 RuntimeService / RunnerService 调用本服务即可。
+    当前动态代理规则：
+    - accounts.csv 仍按 phone,country,profile_dir,status,yanzheng 管理账号；
+    - proxies.csv 仍保留 raw_proxy 表头，但数据区只允许保存一条动态轮换代理；
+    - account_proxy_map.csv 由账号清单 + 单条动态轮换代理生成。
     """
 
     def __init__(self, workspace_dir: str | Path | None = None):
@@ -161,18 +153,7 @@ class TgapipldcWorkspaceService:
         覆盖 accounts.csv 的数据行。
 
         面板输入格式固定为每行 5 列：
-
         phone,country,profile_dir,status,yanzheng
-
-        示例：
-
-        14255871436,US,profiles/14255871436,pending,https://accac.cc/xxx/GetHTML
-
-        覆盖规则：
-        - 保留 accounts.csv 第一行表头；
-        - 删除第二行开始的所有旧数据；
-        - 将 raw_text 中的新数据写入第二行开始；
-        - 如果 raw_text 第一行本身是表头，会自动跳过。
         """
         self.ensure_structure()
         header = self._require_exact_header(
@@ -193,21 +174,13 @@ class TgapipldcWorkspaceService:
 
     def overwrite_proxies_csv_data(self, raw_text: str) -> CsvOverwriteResult:
         """
-        覆盖 proxies.csv 的数据行。
+        保存动态轮换代理。
 
-        面板输入格式固定为每行 1 列：
-
+        面板输入格式固定为一行一列：
         raw_proxy
 
         示例：
-
-        Qg8Ajet4-res-th-sid-843678599-sidtime-70:GlVF6XC@proxy.global.ip2up.com:12348
-
-        覆盖规则：
-        - 保留 proxies.csv 第一行表头；
-        - 删除第二行开始的所有旧数据；
-        - 将 raw_text 中的新代理写入第二行开始；
-        - 如果 raw_text 第一行本身是表头，会自动跳过。
+        Qg8Ajet4-res-th:GlVF6XC@proxy.as.ip2up.com:10235
         """
         self.ensure_structure()
         header = self._require_exact_header(
@@ -435,7 +408,7 @@ class TgapipldcWorkspaceService:
 
             if len(normalized_row) != 1:
                 raise ValueError(
-                    "proxies.csv 数据格式错误："
+                    "动态代理数据格式错误："
                     f"第 {row_index} 行必须是 1 列 raw_proxy，"
                     f"当前是 {len(normalized_row)} 列"
                 )
@@ -443,15 +416,18 @@ class TgapipldcWorkspaceService:
             raw_proxy = normalized_row[0]
 
             if not raw_proxy:
-                raise ValueError(f"proxies.csv 第 {row_index} 行代理为空")
+                raise ValueError(f"动态代理第 {row_index} 行代理为空")
 
             if "@" not in raw_proxy:
-                raise ValueError(f"proxies.csv 第 {row_index} 行代理格式错误，缺少 @：{raw_proxy}")
+                raise ValueError(f"动态代理第 {row_index} 行代理格式错误，缺少 @：{raw_proxy}")
 
             if ":" not in raw_proxy:
-                raise ValueError(f"proxies.csv 第 {row_index} 行代理格式错误，缺少冒号：{raw_proxy}")
+                raise ValueError(f"动态代理第 {row_index} 行代理格式错误，缺少冒号：{raw_proxy}")
 
             result.append([raw_proxy])
+
+        if len(result) > 1:
+            raise ValueError("当前动态轮换代理模式只允许保存一条 raw_proxy，请删除多余代理")
 
         return result
 

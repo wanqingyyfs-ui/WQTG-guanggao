@@ -24,12 +24,11 @@ class TgapipldcPage(QWidget):
     """
     tgapipldc API 批量工作台页面。
 
-    页面只负责 UI 和信号：
-    - CSV 表头独立锁定；
-    - CSV 正文区只编辑第二行开始的数据；
-    - CSV 区 / 流程区 / 日志区通过分割线正常拖动调整高度；
-    - 最小窗口不重叠、不越界；
-    - 最大窗口跟随拉伸。
+    当前动态代理规则：
+    - accounts.csv 正文仍按 phone,country,profile_dir,status,yanzheng 填写；
+    - 动态轮换代理只保存一条 raw_proxy；
+    - “生成运行表”会把同一条动态代理写入所有账号的 account_proxy_map.csv；
+    - 旧的检测代理、构建代理池流程在界面中隐藏，避免继续按一账号一代理操作。
     """
 
     overwrite_accounts_requested = Signal(str)
@@ -66,7 +65,7 @@ class TgapipldcPage(QWidget):
         self.proxies_header_edit = QLineEdit(PROXIES_HEADER_TEXT)
         self.proxies_header_edit.setReadOnly(True)
         self.proxies_header_edit.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.proxies_header_edit.setToolTip("proxies.csv 第一行表头，已锁定不可编辑。")
+        self.proxies_header_edit.setToolTip("动态轮换代理表头，已锁定不可编辑。")
 
         self.accounts_text_edit = QPlainTextEdit()
         self.accounts_text_edit.setPlaceholderText(
@@ -75,7 +74,9 @@ class TgapipldcPage(QWidget):
         self.accounts_text_edit.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
 
         self.proxies_text_edit = QPlainTextEdit()
-        self.proxies_text_edit.setPlaceholderText("username:password@host:port")
+        self.proxies_text_edit.setPlaceholderText(
+            "只填写一条动态轮换代理，例如：\nQg8Ajet4-res-th:GlVF6XC@proxy.as.ip2up.com:10235"
+        )
         self.proxies_text_edit.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
 
         self.log_text_edit = QPlainTextEdit()
@@ -85,11 +86,11 @@ class TgapipldcPage(QWidget):
 
         self.reload_csv_button = QPushButton("刷新 CSV")
         self.overwrite_accounts_button = QPushButton("覆盖 accounts")
-        self.overwrite_proxies_button = QPushButton("覆盖 proxies")
+        self.overwrite_proxies_button = QPushButton("保存动态代理")
 
         self.test_proxies_button = QPushButton("检测代理")
         self.build_proxy_pool_button = QPushButton("构建池")
-        self.assign_proxies_button = QPushButton("绑定")
+        self.assign_proxies_button = QPushButton("生成运行表")
         self.export_api_button = QPushButton("获取 API")
         self.stop_process_button = QPushButton("停止")
 
@@ -159,7 +160,7 @@ class TgapipldcPage(QWidget):
         title_row.setContentsMargins(0, 0, 0, 0)
         title_row.setSpacing(8)
 
-        title_label = QLabel("CSV 输入和覆盖")
+        title_label = QLabel("账号与动态轮换代理")
         title_label.setObjectName("TgapipldcSectionTitleLabel")
 
         title_row.addWidget(title_label, 1)
@@ -168,6 +169,13 @@ class TgapipldcPage(QWidget):
         title_row.addWidget(self.overwrite_proxies_button, 0)
 
         layout.addLayout(title_row)
+
+        hint_label = QLabel(
+            "动态代理只配置一条。生成运行表后，每个账号仍使用自己的 profile_dir，但所有浏览器都从这条动态代理启动。"
+        )
+        hint_label.setWordWrap(True)
+        hint_label.setObjectName("TgapipldcSmallLabel")
+        layout.addWidget(hint_label)
 
         csv_splitter = QSplitter(Qt.Orientation.Horizontal)
         csv_splitter.setChildrenCollapsible(False)
@@ -182,7 +190,7 @@ class TgapipldcPage(QWidget):
         )
         csv_splitter.addWidget(
             self._build_csv_card(
-                title="proxies.csv",
+                title="动态轮换代理",
                 header_widget=self.proxies_header_edit,
                 editor_widget=self.proxies_text_edit,
             )
@@ -246,7 +254,7 @@ class TgapipldcPage(QWidget):
         layout.setContentsMargins(14, 12, 14, 12)
         layout.setSpacing(8)
 
-        title_label = QLabel("tgapipldc 流程")
+        title_label = QLabel("动态代理流程")
         title_label.setObjectName("TgapipldcSectionTitleLabel")
         layout.addWidget(title_label, 0)
 
@@ -348,12 +356,12 @@ class TgapipldcPage(QWidget):
             button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
 
         self.overwrite_accounts_button.setMinimumWidth(118)
-        self.overwrite_proxies_button.setMinimumWidth(110)
+        self.overwrite_proxies_button.setMinimumWidth(118)
 
         flow_button_sizes = {
             self.test_proxies_button: 82,
             self.build_proxy_pool_button: 76,
-            self.assign_proxies_button: 64,
+            self.assign_proxies_button: 96,
             self.export_api_button: 82,
             self.stop_process_button: 64,
             self.import_api_button: 82,
@@ -367,6 +375,9 @@ class TgapipldcPage(QWidget):
             button.setMaximumWidth(width + 12)
             button.setCursor(Qt.CursorShape.PointingHandCursor)
             button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+
+        self.test_proxies_button.setVisible(False)
+        self.build_proxy_pool_button.setVisible(False)
 
         self.stop_process_button.setObjectName("DangerButton")
         self.stop_process_button.setEnabled(False)

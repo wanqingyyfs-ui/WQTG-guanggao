@@ -24,28 +24,15 @@ class TgapipldcCommandResult:
 
 class TgapipldcRunnerService:
     """
-    tgapipldc 原始脚本运行服务。
+    tgapipldc 脚本运行服务。
 
-    这个文件的作用是把已经迁移到：
+    当前只保留动态轮换代理主流程：
+    - 保存 accounts.csv；
+    - 保存 data/proxies.csv 中唯一一条 raw_proxy；
+    - 生成 account_proxy_map.csv 时所有账号共用这一条动态代理；
+    - 登录、打开浏览器、资料维护继续调用原脚本文件名，避免新增 *_dynamic.py 双轨文件。
 
-        app/vendor/tgapipldc/src/
-
-    里面的旧脚本，以安全、统一、可记录日志的方式运行起来。
-
-    当前支持：
-    - test_proxies.py
-    - build_proxy_pool.py
-    - assign_proxies.py
-    - login_telegram_web.py
-    - open_account_browser.py
-    - update_telegram_profile.py
-
-    说明：
-    - 这是 GUI 面板接入前的脚本桥接层；
-    - 代理检测和账号绑定已经有服务化版本，但保留脚本运行能力方便校验；
-    - login_telegram_web.py 体量很大，当前阶段先使用 runner 调用迁移后的原脚本；
-    - update_telegram_profile.py 独立负责账号资料维护，不污染 API 获取流程；
-    - 本类不依赖 PySide6，可以在后台线程里被 RuntimeService 或页面 Worker 调用。
+    旧的“检测代理 -> 构建可用代理池 -> 一账号一代理绑定”流程已从主入口移除。
     """
 
     SCRIPT_TEST_PROXIES = "test_proxies.py"
@@ -87,23 +74,27 @@ class TgapipldcRunnerService:
                 pass
 
     def run_test_proxies(self, log_callback: LogCallback | None = None) -> TgapipldcCommandResult:
-        return self.run_script(
-            script_name=self.SCRIPT_TEST_PROXIES,
-            command_name="检测代理",
-            log_callback=log_callback,
+        self._emit(log_callback, "动态轮换代理模式不再使用旧的代理池检测入口，请直接保存动态代理并生成运行表。")
+        return TgapipldcCommandResult(
+            command_name="旧代理池检测已移除",
+            script_path=self.workspace.src_dir / self.SCRIPT_TEST_PROXIES,
+            return_code=0,
+            success=True,
         )
 
     def run_build_proxy_pool(self, log_callback: LogCallback | None = None) -> TgapipldcCommandResult:
-        return self.run_script(
-            script_name=self.SCRIPT_BUILD_PROXY_POOL,
-            command_name="构建可用代理池",
-            log_callback=log_callback,
+        self._emit(log_callback, "动态轮换代理模式不再构建可用代理池，请直接保存动态代理并生成运行表。")
+        return TgapipldcCommandResult(
+            command_name="旧构建代理池已移除",
+            script_path=self.workspace.src_dir / self.SCRIPT_BUILD_PROXY_POOL,
+            return_code=0,
+            success=True,
         )
 
     def run_assign_proxies(self, log_callback: LogCallback | None = None) -> TgapipldcCommandResult:
         return self.run_script(
             script_name=self.SCRIPT_ASSIGN_PROXIES,
-            command_name="绑定账号和代理",
+            command_name="生成动态代理账号运行表",
             log_callback=log_callback,
         )
 

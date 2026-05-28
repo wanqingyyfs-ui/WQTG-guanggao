@@ -2337,7 +2337,8 @@ def verify_browser_proxy(context, account: dict[str, str], realtime_ip: str) -> 
 
     log(f"浏览器出口 IP：{browser_ip}")
     if browser_ip != realtime_ip:
-        return False, browser_ip, f"ip_mismatch: requests={realtime_ip}, browser={browser_ip}"
+        log("动态轮换代理模式：requests 出口 IP 与浏览器出口 IP 不一致，允许继续。")
+        log(f"requests={realtime_ip}, browser={browser_ip}")
 
     if account.get("exit_ip") != browser_ip:
         update_account_proxy_map_exit_ip(account["phone"], browser_ip)

@@ -4,7 +4,7 @@ import csv
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Iterable
+from typing import Callable
 
 import requests
 
@@ -76,46 +76,6 @@ class ProxyCheckResult:
 
 
 @dataclass(frozen=True)
-class ProxyTestRow:
-    raw_proxy: str
-    masked_proxy: str
-    exit_ip: str
-    duplicate: str
-    status: str
-    note: str
-
-    def to_csv_row(self) -> dict[str, str]:
-        return {
-            "raw_proxy": self.raw_proxy,
-            "masked_proxy": self.masked_proxy,
-            "exit_ip": self.exit_ip,
-            "duplicate": self.duplicate,
-            "status": self.status,
-            "note": self.note,
-        }
-
-
-@dataclass(frozen=True)
-class UsableProxyRow:
-    raw_proxy: str
-    masked_proxy: str
-    exit_ip: str
-    assigned_phone: str = ""
-    status: str = "unused"
-    note: str = ""
-
-    def to_csv_row(self) -> dict[str, str]:
-        return {
-            "raw_proxy": self.raw_proxy,
-            "masked_proxy": self.masked_proxy,
-            "exit_ip": self.exit_ip,
-            "assigned_phone": self.assigned_phone,
-            "status": self.status,
-            "note": self.note,
-        }
-
-
-@dataclass(frozen=True)
 class ProxyTestSummary:
     total: int
     ok_count: int
@@ -137,30 +97,17 @@ ProgressCallback = Callable[[str], None]
 
 class TgapipldcProxyService:
     """
-    tgapipldc 代理检测服务。
+    动态轮换代理服务。
 
-    对应原 tgapipldc 命令：
-    - python src\test_proxies.py
-    - python src\build_proxy_pool.py
-
-    当前服务只负责：
-    1. 读取 data/proxies.csv；
-    2. 检测代理出口 IP；
-    3. 生成 data/proxy_test_results.csv；
-    4. 从检测结果生成 data/usable_proxies.csv。
-
-    不负责：
-    - GUI；
-    - 账号绑定；
-    - Playwright 浏览器；
-    - Telegram 登录。
+    旧的多代理检测、去重、构建可用代理池流程已经移除。
+    当前只读取 data/proxies.csv 中唯一一条 raw_proxy，用于快速验证代理是否可连。
     """
 
     def __init__(
         self,
         workspace_service: TgapipldcWorkspaceService | None = None,
         request_timeout_seconds: int = 20,
-        per_proxy_sleep_seconds: float = 1.0,
+        per_proxy_sleep_seconds: float = 0.0,
     ):
         self.workspace_service = workspace_service or TgapipldcWorkspaceService()
         self.request_timeout_seconds = int(request_timeout_seconds)
@@ -171,7 +118,7 @@ class TgapipldcProxyService:
         file_path = self.workspace_service.proxies_csv_path
 
         if not file_path.exists():
-            raise FileNotFoundError(f"找不到代理文件：{file_path}")
+            raise FileNotFoundError(f"找不到动态代理文件：{file_path}")
 
         raw_proxies: list[str] = []
 
@@ -188,93 +135,74 @@ class TgapipldcProxyService:
                     raw_proxies.append(raw_proxy)
 
         if not raw_proxies:
-            raise ValueError("data\\proxies.csv 里没有代理")
+            raise ValueError("data\\proxies.csv 里没有动态轮换代理")
+
+        if len(raw_proxies) > 1:
+            raise ValueError("动态轮换代理模式只允许配置一条 raw_proxy，请删除多余代理")
 
         return raw_proxies
 
     def test_proxies(self, progress_callback: ProgressCallback | None = None) -> ProxyTestSummary:
-        raw_proxies = self.read_raw_proxies()
-        results: list[ProxyTestRow] = []
-        seen_ips: set[str] = set()
-
-        self._emit(progress_callback, f"读取到 {len(raw_proxies)} 条代理")
-
-        for index, raw_proxy in enumerate(raw_proxies, start=1):
-            self._emit(progress_callback, f"[{index}/{len(raw_proxies)}] 开始检测代理")
-
-            try:
-                parsed_proxy = self.parse_raw_proxy(raw_proxy)
-                check_result = self.check_exit_ip(parsed_proxy)
-
-                if check_result.ok:
-                    duplicate = "yes" if check_result.exit_ip in seen_ips else "no"
-                    seen_ips.add(check_result.exit_ip)
-
-                    status = "ok" if duplicate == "no" else "duplicate_ip"
-
-                    self._emit(progress_callback, f"代理：{parsed_proxy.masked_raw_proxy}")
-                    self._emit(progress_callback, f"出口 IP：{check_result.exit_ip}")
-                    self._emit(progress_callback, f"是否重复：{duplicate}")
-                    self._emit(progress_callback, f"状态：{status}")
-
-                    results.append(
-                        ProxyTestRow(
-                            raw_proxy=raw_proxy,
-                            masked_proxy=parsed_proxy.masked_raw_proxy,
-                            exit_ip=check_result.exit_ip,
-                            duplicate=duplicate,
-                            status=status,
-                            note="",
-                        )
-                    )
-                else:
-                    self._emit(progress_callback, f"代理：{parsed_proxy.masked_raw_proxy}")
-                    self._emit(progress_callback, "状态：bad")
-                    self._emit(progress_callback, f"错误：{check_result.error}")
-
-                    results.append(
-                        ProxyTestRow(
-                            raw_proxy=raw_proxy,
-                            masked_proxy=parsed_proxy.masked_raw_proxy,
-                            exit_ip="",
-                            duplicate="",
-                            status="bad",
-                            note=check_result.error,
-                        )
-                    )
-
-            except Exception as exc:
-                self._emit(progress_callback, "状态：parse_failed")
-                self._emit(progress_callback, f"错误：{exc}")
-
-                results.append(
-                    ProxyTestRow(
-                        raw_proxy=raw_proxy,
-                        masked_proxy="",
-                        exit_ip="",
-                        duplicate="",
-                        status="parse_failed",
-                        note=str(exc),
-                    )
-                )
-
-            if self.per_proxy_sleep_seconds > 0 and index < len(raw_proxies):
-                time.sleep(self.per_proxy_sleep_seconds)
-
+        raw_proxy = self.read_raw_proxies()[0]
         result_path = self.workspace_service.proxy_test_results_csv_path
-        self._write_proxy_test_results(result_path, results)
+        result_path.parent.mkdir(parents=True, exist_ok=True)
 
-        ok_count = sum(1 for item in results if item.status == "ok")
-        duplicate_ip_count = sum(1 for item in results if item.status == "duplicate_ip")
-        bad_count = sum(1 for item in results if item.status == "bad")
-        parse_failed_count = sum(1 for item in results if item.status == "parse_failed")
+        ok_count = 0
+        bad_count = 0
+        parse_failed_count = 0
+        row: dict[str, str]
 
-        self._emit(progress_callback, f"检测完成，结果已保存到：{result_path}")
+        self._emit(progress_callback, "动态轮换代理模式：只检测当前保存的一条 raw_proxy")
 
+        try:
+            parsed_proxy = self.parse_raw_proxy(raw_proxy)
+            check_result = self.check_exit_ip(parsed_proxy)
+            if check_result.ok:
+                ok_count = 1
+                self._emit(progress_callback, f"动态代理：{parsed_proxy.masked_raw_proxy}")
+                self._emit(progress_callback, f"requests 检测出口 IP：{check_result.exit_ip}")
+                self._emit(progress_callback, "状态：ok")
+                row = {
+                    "raw_proxy": raw_proxy,
+                    "masked_proxy": parsed_proxy.masked_raw_proxy,
+                    "exit_ip": check_result.exit_ip,
+                    "duplicate": "dynamic",
+                    "status": "ok",
+                    "note": "dynamic_proxy_checked",
+                }
+            else:
+                bad_count = 1
+                self._emit(progress_callback, f"状态：bad，错误：{check_result.error}")
+                row = {
+                    "raw_proxy": raw_proxy,
+                    "masked_proxy": parsed_proxy.masked_raw_proxy,
+                    "exit_ip": "",
+                    "duplicate": "dynamic",
+                    "status": "bad",
+                    "note": check_result.error,
+                }
+        except Exception as exc:
+            parse_failed_count = 1
+            self._emit(progress_callback, f"状态：parse_failed，错误：{exc}")
+            row = {
+                "raw_proxy": raw_proxy,
+                "masked_proxy": "",
+                "exit_ip": "",
+                "duplicate": "dynamic",
+                "status": "parse_failed",
+                "note": str(exc),
+            }
+
+        with result_path.open("w", encoding="utf-8-sig", newline="") as file:
+            writer = csv.DictWriter(file, fieldnames=PROXY_TEST_RESULT_HEADER)
+            writer.writeheader()
+            writer.writerow(row)
+
+        self._emit(progress_callback, f"检测结果已保存到：{result_path}")
         return ProxyTestSummary(
-            total=len(results),
+            total=1,
             ok_count=ok_count,
-            duplicate_ip_count=duplicate_ip_count,
+            duplicate_ip_count=0,
             bad_count=bad_count,
             parse_failed_count=parse_failed_count,
             result_path=result_path,
@@ -282,47 +210,28 @@ class TgapipldcProxyService:
 
     def build_proxy_pool(self, progress_callback: ProgressCallback | None = None) -> ProxyPoolSummary:
         self.workspace_service.ensure_structure()
+        raw_proxy = self.read_raw_proxies()[0]
+        parsed_proxy = self.parse_raw_proxy(raw_proxy)
         source_path = self.workspace_service.proxy_test_results_csv_path
         output_path = self.workspace_service.usable_proxies_csv_path
+        output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        if not source_path.exists():
-            raise FileNotFoundError(f"找不到文件：{source_path}")
+        with output_path.open("w", encoding="utf-8-sig", newline="") as file:
+            writer = csv.DictWriter(file, fieldnames=USABLE_PROXIES_HEADER)
+            writer.writeheader()
+            writer.writerow({
+                "raw_proxy": raw_proxy,
+                "masked_proxy": parsed_proxy.masked_raw_proxy,
+                "exit_ip": "dynamic",
+                "assigned_phone": "",
+                "status": "dynamic",
+                "note": "dynamic_proxy_mode_no_pool",
+            })
 
-        usable_rows: list[UsableProxyRow] = []
-
-        with source_path.open("r", encoding="utf-8-sig", newline="") as file:
-            reader = csv.DictReader(file)
-
-            current_fields = set(reader.fieldnames or [])
-            required_fields = set(PROXY_TEST_RESULT_HEADER)
-            missing_fields = required_fields - current_fields
-
-            if missing_fields:
-                raise ValueError(f"proxy_test_results.csv 缺少字段：{missing_fields}")
-
-            for row in reader:
-                status = str(row.get("status") or "").strip()
-                duplicate = str(row.get("duplicate") or "").strip()
-
-                if status == "ok" and duplicate == "no":
-                    usable_rows.append(
-                        UsableProxyRow(
-                            raw_proxy=str(row.get("raw_proxy") or "").strip(),
-                            masked_proxy=str(row.get("masked_proxy") or "").strip(),
-                            exit_ip=str(row.get("exit_ip") or "").strip(),
-                        )
-                    )
-
-        self._write_usable_proxies(output_path, usable_rows)
-
-        self._emit(progress_callback, f"可用代理数量：{len(usable_rows)}")
-        self._emit(progress_callback, f"已生成：{output_path}")
-
-        if not usable_rows:
-            self._emit(progress_callback, "没有可用代理。请先更换代理或重新检测代理。")
-
+        self._emit(progress_callback, "动态轮换代理模式不再构建多代理池；已写入兼容占位文件。")
+        self._emit(progress_callback, f"兼容文件：{output_path}")
         return ProxyPoolSummary(
-            usable_count=len(usable_rows),
+            usable_count=1,
             source_path=source_path,
             output_path=output_path,
         )
@@ -389,10 +298,8 @@ class TgapipldcProxyService:
 
         if not username:
             raise ValueError("代理用户名为空")
-
         if not password:
             raise ValueError("代理密码为空")
-
         if not host:
             raise ValueError("代理 host 为空")
 
@@ -410,36 +317,18 @@ class TgapipldcProxyService:
         )
 
     @staticmethod
-    def _write_proxy_test_results(file_path: Path, rows: Iterable[ProxyTestRow]) -> None:
-        file_path.parent.mkdir(parents=True, exist_ok=True)
-
-        with file_path.open("w", encoding="utf-8-sig", newline="") as file:
-            writer = csv.DictWriter(file, fieldnames=PROXY_TEST_RESULT_HEADER)
-            writer.writeheader()
-            writer.writerows(row.to_csv_row() for row in rows)
-
-    @staticmethod
-    def _write_usable_proxies(file_path: Path, rows: Iterable[UsableProxyRow]) -> None:
-        file_path.parent.mkdir(parents=True, exist_ok=True)
-
-        with file_path.open("w", encoding="utf-8-sig", newline="") as file:
-            writer = csv.DictWriter(file, fieldnames=USABLE_PROXIES_HEADER)
-            writer.writeheader()
-            writer.writerows(row.to_csv_row() for row in rows)
-
-    @staticmethod
     def _read_csv_dicts(file_path: Path) -> list[dict[str, str]]:
         if not file_path.exists():
             return []
 
         with file_path.open("r", encoding="utf-8-sig", newline="") as file:
             reader = csv.DictReader(file)
-            return [
-                {str(key or ""): str(value or "") for key, value in row.items()}
-                for row in reader
-            ]
+            return [dict(row) for row in reader]
 
     @staticmethod
     def _emit(progress_callback: ProgressCallback | None, message: str) -> None:
+        safe_message = str(message or "")
         if callable(progress_callback):
-            progress_callback(str(message or ""))
+            progress_callback(safe_message)
+        else:
+            print(safe_message)

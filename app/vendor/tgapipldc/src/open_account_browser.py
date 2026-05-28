@@ -289,23 +289,19 @@ def open_browser_for_account(account: dict):
         print(f"实时出口 IP：{realtime_ip}")
         print(f"浏览器出口 IP：{browser_ip}")
 
-        if browser_ip == realtime_ip:
-            status = "ok"
-            note = ""
-            print("状态：通过。浏览器代理配置正确。")
+        status = "ok"
+        note = f"dynamic_proxy，requests={realtime_ip}, browser={browser_ip}"
+        if browser_ip != realtime_ip:
+            print("动态轮换代理模式：requests 出口 IP 与浏览器出口 IP 不一致，允许继续。")
+        print("状态：通过。浏览器代理已生效。")
 
-            if account["historical_exit_ip"] != browser_ip:
-                update_account_proxy_map_exit_ip(
-                    phone=account["phone"],
-                    new_exit_ip=browser_ip,
-                )
+        if account["historical_exit_ip"] != browser_ip:
+            update_account_proxy_map_exit_ip(
+                phone=account["phone"],
+                new_exit_ip=browser_ip,
+            )
 
-            print("可以继续用这个窗口做 Telegram Web 登录测试。")
-        else:
-            status = "ip_mismatch"
-            note = f"requests={realtime_ip}, browser={browser_ip}"
-            print("状态：不通过。requests 实时 IP 和浏览器 IP 不一致。")
-            print("不要继续登录 Telegram。")
+        print("可以继续用这个窗口做 Telegram Web 登录测试。")
 
         append_browser_proxy_check({
             "phone": account["phone"],

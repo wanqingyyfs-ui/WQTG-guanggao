@@ -2,13 +2,15 @@ import csv
 import re
 from pathlib import Path
 
+from proxy_utils import parse_raw_proxy
 
-SCRIPT_VERSION = "accounts-yanzheng-chain-v9"
+
+SCRIPT_VERSION = "dynamic-proxy-assignment-v1"
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 ACCOUNTS_FILE = BASE_DIR / "data" / "accounts.csv"
-USABLE_PROXIES_FILE = BASE_DIR / "data" / "usable_proxies.csv"
+PROXIES_FILE = BASE_DIR / "data" / "proxies.csv"
 ACCOUNT_PROXY_MAP_FILE = BASE_DIR / "data" / "account_proxy_map.csv"
 
 COUNTRY_CODE_BY_COUNTRY = {
@@ -20,6 +22,7 @@ COUNTRY_CODE_BY_COUNTRY = {
     "HK": "852",
     "KH": "855",
     "CN": "86",
+    "TH": "66",
 }
 
 OUTPUT_FIELDS = [
@@ -178,84 +181,52 @@ def read_accounts() -> list[dict]:
     return accounts
 
 
-def read_usable_proxies() -> list[dict]:
-    if not USABLE_PROXIES_FILE.exists():
-        raise FileNotFoundError(f"找不到可用代理文件：{USABLE_PROXIES_FILE}")
+def read_dynamic_proxy() -> dict:
+    if not PROXIES_FILE.exists():
+        raise FileNotFoundError(f"找不到动态代理文件：{PROXIES_FILE}")
 
-    proxies = []
+    raw_proxies = []
 
-    with open(USABLE_PROXIES_FILE, "r", encoding="utf-8-sig", newline="") as f:
+    with open(PROXIES_FILE, "r", encoding="utf-8-sig", newline="") as f:
         reader = csv.DictReader(f)
+        fieldnames = set(reader.fieldnames or [])
 
-        required_fields = {
-            "raw_proxy",
-            "masked_proxy",
-            "exit_ip",
-            "assigned_phone",
-            "status",
-            "note",
-        }
-        current_fields = set(reader.fieldnames or [])
-
-        missing_fields = required_fields - current_fields
-        if missing_fields:
-            raise ValueError(f"usable_proxies.csv 缺少字段：{missing_fields}")
-
-        seen_exit_ips = set()
+        if "raw_proxy" not in fieldnames:
+            raise ValueError("proxies.csv 第一行必须是：raw_proxy")
 
         for row in reader:
-            status = (row.get("status") or "").strip()
             raw_proxy = (row.get("raw_proxy") or "").strip()
-            masked_proxy = (row.get("masked_proxy") or "").strip()
-            exit_ip = (row.get("exit_ip") or "").strip()
+            if raw_proxy:
+                raw_proxies.append(raw_proxy)
 
-            if status != "unused":
-                continue
+    if not raw_proxies:
+        raise ValueError("proxies.csv 里没有动态轮换代理")
 
-            if not raw_proxy or not exit_ip:
-                continue
+    if len(raw_proxies) > 1:
+        raise ValueError("动态轮换代理模式只允许配置一条 raw_proxy，请删除多余代理")
 
-            if exit_ip in seen_exit_ips:
-                continue
-
-            seen_exit_ips.add(exit_ip)
-
-            proxies.append({
-                "raw_proxy": raw_proxy,
-                "masked_proxy": masked_proxy,
-                "exit_ip": exit_ip,
-                "status": status,
-            })
-
-    if not proxies:
-        raise ValueError("usable_proxies.csv 里没有可分配代理")
-
-    return proxies
+    parsed_proxy = parse_raw_proxy(raw_proxies[0])
+    return {
+        "raw_proxy": raw_proxies[0],
+        "masked_proxy": parsed_proxy.masked_raw_proxy,
+    }
 
 
 def main():
     print(f"分配代理脚本版本：{SCRIPT_VERSION}")
-    print("文件编号：009，accounts.csv -> account_proxy_map.csv 会保留 yanzheng 字段。")
+    print("当前模式：accounts.csv + 一条动态轮换代理 -> account_proxy_map.csv。")
 
     accounts = read_accounts()
-    proxies = read_usable_proxies()
+    proxy = read_dynamic_proxy()
 
-    print(f"待分配账号数量：{len(accounts)}")
-    print(f"可用代理数量：{len(proxies)}")
+    print(f"待生成账号数量：{len(accounts)}")
+    print(f"动态代理：{proxy['masked_proxy']}")
 
-    if len(proxies) < len(accounts):
-        print("可用代理数量不足。")
-        print(f"当前待分配账号数量：{len(accounts)}")
-        print(f"当前可用代理数量：{len(proxies)}")
-        print("本次只会按可用代理数量分配一部分账号。")
-
-    assign_count = min(len(accounts), len(proxies))
     rows = []
 
-    for index in range(assign_count):
-        account = accounts[index]
-        proxy = proxies[index]
-
+    for account in accounts:
+        account_note = account.get("note") or ""
+        note_parts = [part for part in [account_note, "shared_dynamic_proxy"] if part]
         rows.append({
             "phone": account["phone"],
             "country": account["country"],
@@ -267,9 +238,9 @@ def main():
             "yanzheng": account["yanzheng"],
             "raw_proxy": proxy["raw_proxy"],
             "masked_proxy": proxy["masked_proxy"],
-            "exit_ip": proxy["exit_ip"],
-            "status": "proxy_assigned",
-            "note": account["note"],
+            "exit_ip": "",
+            "status": "dynamic_proxy_assigned",
+            "note": " | ".join(note_parts),
         })
 
     with open(ACCOUNT_PROXY_MAP_FILE, "w", encoding="utf-8-sig", newline="") as f:
@@ -277,14 +248,14 @@ def main():
         writer.writeheader()
         writer.writerows(rows)
 
-    print(f"已分配账号数量：{len(rows)}")
+    print(f"已生成账号运行表数量：{len(rows)}")
     print(f"已生成：{ACCOUNT_PROXY_MAP_FILE}")
     print("-" * 80)
 
     for row in rows:
         print(
             f"{row['phone']} / {row['country_code']} / {row['national_number']} -> "
-            f"{row['masked_proxy']} -> {row['exit_ip']} -> {row['yanzheng']}"
+            f"{row['masked_proxy']} -> dynamic -> {row['yanzheng']}"
         )
 
 

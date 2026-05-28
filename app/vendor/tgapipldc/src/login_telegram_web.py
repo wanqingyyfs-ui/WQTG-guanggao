@@ -3920,7 +3920,7 @@ def open_telegram_web_for_login(account: dict[str, str]) -> tuple[bool, str]:
 
     print("-" * 80)
     print(f"登录脚本版本：{SCRIPT_VERSION}")
-    print("结构说明：批量自动模式；不再手动选择账号，按 account_proxy_map.csv 顺序逐个账号执行；前置登录/API 导出逻辑不变。")
+    print("结构说明：动态轮换代理模式；所有账号共用面板保存的一条 raw_proxy，按 account_proxy_map.csv 顺序逐个账号执行。")
     print(f"当前账号：{account['phone']}")
     print(f"自动填写手机号：{account['telegram_phone']}")
     print(f"国家码：{account['country_code'] or '不单独填写'}")
@@ -3969,10 +3969,8 @@ def open_telegram_web_for_login(account: dict[str, str]) -> tuple[bool, str]:
 
             print(f"浏览器出口 IP：{browser_ip}")
             if browser_ip != realtime_ip:
-                note = f"requests={realtime_ip}, browser={browser_ip}"
-                print("浏览器 IP 和实时代理 IP 不一致，不要继续登录。")
-                append_status_for_proxy_failure(account, parsed_proxy, "ip_mismatch", note, browser_ip)
-                return False, f"ip_mismatch: {note}"
+                print("动态轮换代理模式：requests 出口 IP 与浏览器出口 IP 不一致，允许继续。")
+                print(f"requests={realtime_ip}, browser={browser_ip}")
 
             if account["exit_ip"] != browser_ip:
                 update_account_proxy_map_exit_ip(account["phone"], browser_ip)
@@ -4012,11 +4010,11 @@ def open_telegram_web_for_login(account: dict[str, str]) -> tuple[bool, str]:
                 success = False
             elif mytelegram_done or automation_indicates_api_done:
                 telegram_status = "api_export_success"
-                note = automation_note or "my.telegram.org API 导出成功"
+                note = " | ".join([automation_note or "my.telegram.org API 导出成功", f"dynamic_proxy，requests_ip={realtime_ip}，browser_ip={browser_ip}"])
                 success = True
             else:
                 telegram_status = "api_export_failed"
-                note = automation_note or "my.telegram.org 自动流程未完成或未成功写入 API CSV"
+                note = " | ".join([automation_note or "my.telegram.org 自动流程未完成或未成功写入 API CSV", f"dynamic_proxy，requests_ip={realtime_ip}，browser_ip={browser_ip}"])
                 success = False
 
             if automation_note:
