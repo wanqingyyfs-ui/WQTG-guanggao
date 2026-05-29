@@ -28,6 +28,7 @@ except ImportError:
 from app.gui.pages.task_page import TaskPage
 from app.gui.pages.template_page import TemplatePage
 from app.gui.style import build_app_qss
+from app.gui.tgapipldc_panel_bootstrap import setup_tgapipldc_pages
 from app.gui.widgets.dock_panel import create_config_dock
 from app.services.runtime_service_grouped import RuntimeService
 
@@ -107,6 +108,7 @@ class MainWindow(QMainWindow):
         self._status_refresh_timer.timeout.connect(self._flush_account_status_refresh)
 
         self._connect_signals()
+        setup_tgapipldc_pages(self)
         self.refresh_all_views()
         self.templates_sync_timer.start()
         self.statusBar().showMessage("准备就绪", 3000)

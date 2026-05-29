@@ -17,28 +17,18 @@ PROFILE_MAINTENANCE_ACTION_NAMES = {
 
 
 def install_tgapipldc_panel() -> None:
-    """给 MainWindow 动态安装 tgapipldc 工作台，避免大范围改 main_window.py。"""
-    from app.gui.main_window import MainWindow
+    """历史兼容入口。新版不再 monkey patch MainWindow.__init__。"""
+    return None
+
+
+def setup_tgapipldc_pages(window) -> None:
+    """显式给 MainWindow 安装 tgapipldc 工作台页面。"""
     from app.gui.pages.tgapipldc_page import TgapipldcPage
     from app.gui.pages.tgapipldc_profile_maintenance_page import (
         TgapipldcProfileMaintenancePage,
     )
 
-    if getattr(MainWindow, "_tgapipldc_panel_installed", False):
-        return
-
-    original_init = MainWindow.__init__
-
-    def patched_init(self, *args, **kwargs):
-        original_init(self, *args, **kwargs)
-        _setup_tgapipldc_pages(
-            self,
-            TgapipldcPage,
-            TgapipldcProfileMaintenancePage,
-        )
-
-    MainWindow.__init__ = patched_init
-    MainWindow._tgapipldc_panel_installed = True
+    _setup_tgapipldc_pages(window, TgapipldcPage, TgapipldcProfileMaintenancePage)
 
 
 def _setup_tgapipldc_pages(window, api_page_class, profile_page_class) -> None:

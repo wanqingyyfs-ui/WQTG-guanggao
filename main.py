@@ -11,10 +11,6 @@ from pathlib import Path
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication, QMessageBox
 
-from app.gui.tgapipldc_panel_bootstrap import install_tgapipldc_panel
-
-install_tgapipldc_panel()
-
 from app.gui.main_window import MainWindow
 
 APP_NAME = "Telegram 用户号群发任务面板"

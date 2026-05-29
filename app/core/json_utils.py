@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -15,6 +16,13 @@ def read_json_file(path: str | Path, default: Any = None) -> Any:
         raise FileNotFoundError(f"配置文件不存在: {file_path}")
     with file_path.open("r", encoding="utf-8") as file:
         return json.load(file)
+
+
+def _backup_existing_file(file_path: Path) -> None:
+    if not file_path.exists() or not file_path.is_file():
+        return
+    backup_path = file_path.with_suffix(file_path.suffix + ".bak")
+    shutil.copy2(file_path, backup_path)
 
 
 def atomic_write_json(path: str | Path, data: Any) -> None:
@@ -34,6 +42,7 @@ def atomic_write_json(path: str | Path, data: Any) -> None:
             file.write("\n")
             file.flush()
             os.fsync(file.fileno())
+        _backup_existing_file(file_path)
         temp_path.replace(file_path)
     except Exception:
         try:

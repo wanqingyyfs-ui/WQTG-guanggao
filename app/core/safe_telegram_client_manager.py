@@ -1,11 +1,9 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
-from pathlib import Path
 from typing import AsyncIterator
 
 from telethon import TelegramClient
@@ -13,7 +11,6 @@ from telethon.errors import FloodWaitError
 
 from app.core.models import AccountConfig
 from app.core.proxy_utils import (
-    config_base_from_sessions_dir,
     mask_proxy_config,
     normalize_proxy_config,
     proxy_identity,
@@ -43,7 +40,7 @@ class SafeTelegramClientManager(BaseTelegramClientManager):
     DEFAULT_MAX_CONCURRENT_ACCOUNT_STARTS = 1
     DEFAULT_ACCOUNT_START_GAP_SECONDS = 2.0
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, account_group_proxies: dict | None = None, **kwargs):
         super().__init__(*args, **kwargs)
         self._account_locks: dict[str, asyncio.Lock] = {}
         self._session_locks: dict[str, asyncio.Lock] = {}
@@ -51,12 +48,13 @@ class SafeTelegramClientManager(BaseTelegramClientManager):
         self._start_semaphore_size = self._max_concurrent_account_starts()
         self._last_account_start_at: datetime | None = None
         self._start_gap_lock = asyncio.Lock()
-        self._account_group_proxies: dict[str, dict] = self._load_account_group_proxies()
+        self._account_group_proxies: dict[str, dict] = self._normalize_account_group_proxies(account_group_proxies)
         self._install_telethon_log_filter()
 
-    def update_configuration(self, *args, **kwargs) -> None:
+    def update_configuration(self, *args, account_group_proxies: dict | None = None, **kwargs) -> None:
         super().update_configuration(*args, **kwargs)
-        self._account_group_proxies = self._load_account_group_proxies()
+        if account_group_proxies is not None:
+            self._account_group_proxies = self._normalize_account_group_proxies(account_group_proxies)
         new_size = self._max_concurrent_account_starts()
         if new_size != self._start_semaphore_size:
             self._start_semaphore = asyncio.Semaphore(new_size)
@@ -99,23 +97,7 @@ class SafeTelegramClientManager(BaseTelegramClientManager):
         return max(0.0, min(30.0, value))
 
 
-    def _account_group_proxies_path(self) -> Path:
-        base_dir = config_base_from_sessions_dir(getattr(self.settings, "sessions_dir", ""))
-        return base_dir / "config" / "account_group_proxies.json"
-
-    def _load_account_group_proxies(self) -> dict[str, dict]:
-        path = self._account_group_proxies_path()
-        if not path.exists():
-            return {}
-        try:
-            with path.open("r", encoding="utf-8") as file:
-                data = json.load(file)
-        except Exception as exc:
-            self._emit_log("warning", f"读取账号组代理配置失败，已按直连处理: {exc}")
-            return {}
-        if not isinstance(data, dict):
-            return {}
-        raw_items = data.get("account_group_proxies", data)
+    def _normalize_account_group_proxies(self, raw_items: dict | None) -> dict[str, dict]:
         if not isinstance(raw_items, dict):
             return {}
         result: dict[str, dict] = {}
