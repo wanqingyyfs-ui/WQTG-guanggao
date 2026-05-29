@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
+from typing import Any
 
 from app.core.config_loader import (
     load_accounts,
@@ -24,6 +26,7 @@ from app.core.models import (
     Settings,
     TemplateConfig,
 )
+from app.core.proxy_utils import normalize_proxy_config, validate_proxy_config
 
 
 APP_NAME = "万青TG群发任务"
@@ -37,18 +40,8 @@ def get_appdata_base_dir(app_name: str = APP_NAME) -> Path:
 
 
 def resolve_base_dir(base_dir: str | Path | None = None) -> Path:
-    """
-    默认使用 Windows 用户级 AppData 目录。
-
-    兼容旧调用：
-    - RuntimeService() 默认传入 "."
-    - 旧 ConfigService(base_dir=".") 过去实际也是使用 AppData
-
-    所以这里把 None、空字符串、"." 都解析为 AppData，避免升级后数据目录突然变到项目根目录。
-    """
     if base_dir is None:
         return get_appdata_base_dir()
-
     base_dir_text = str(base_dir).strip()
     if not base_dir_text or base_dir_text == ".":
         return get_appdata_base_dir()
@@ -72,6 +65,9 @@ class ConfigService:
         self.templates_path = self.config_dir / "templates.json"
         self.settings_path = self.config_dir / "settings.json"
         self.noise_pool_path = self.config_dir / "noise_pool.json"
+        self.group_sets_path = self.config_dir / "group_sets.json"
+        self.account_group_proxies_path = self.config_dir / "account_group_proxies.json"
+        self.group_pairing_runtime_state_path = self.data_dir / "group_pairing_runtime_state.json"
 
         self._ensure_structure()
 
@@ -84,19 +80,18 @@ class ConfigService:
 
         if not self.accounts_path.exists():
             save_accounts(str(self.accounts_path), [])
-
         if not self.groups_path.exists():
             save_groups(str(self.groups_path), [])
-
         if not self.tasks_path.exists():
             save_tasks(str(self.tasks_path), [])
-
         if not self.templates_path.exists():
             save_templates(str(self.templates_path), [])
-
         if not self.noise_pool_path.exists():
             save_noise_pool(str(self.noise_pool_path), [])
-
+        if not self.group_sets_path.exists():
+            self.save_group_sets({"account_groups": [], "group_groups": []})
+        if not self.account_group_proxies_path.exists():
+            self.save_account_group_proxies({})
         if not self.settings_path.exists():
             settings = Settings()
             settings.log_file = str(self.logs_dir / "app.log")
@@ -119,7 +114,6 @@ class ConfigService:
         templates = load_templates(str(self.templates_path))
         settings = load_settings(str(self.settings_path))
         noise_pool = load_noise_pool(str(self.noise_pool_path))
-
         settings.log_file = str(self.logs_dir / "app.log")
         settings.sessions_dir = str(self.sessions_dir)
         return accounts, groups, tasks, templates, settings, noise_pool
@@ -132,6 +126,105 @@ class ConfigService:
 
     def load_noise_pool(self) -> list[str]:
         return load_noise_pool(str(self.noise_pool_path))
+
+    @staticmethod
+    def _normalize_group_set_values(value: Any) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            raw_items = [value]
+        elif isinstance(value, (list, tuple, set)):
+            raw_items = list(value)
+        else:
+            return []
+
+        result: list[str] = []
+        for item in raw_items:
+            text = str(item or "").strip()
+            if text and text not in result:
+                result.append(text)
+        return result
+
+    def load_group_sets(self) -> dict[str, list[str]]:
+        if not self.group_sets_path.exists():
+            return {"account_groups": [], "group_groups": []}
+        try:
+            with self.group_sets_path.open("r", encoding="utf-8") as file:
+                data = json.load(file)
+        except Exception:
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        return {
+            "account_groups": self._normalize_group_set_values(data.get("account_groups")),
+            "group_groups": self._normalize_group_set_values(data.get("group_groups")),
+        }
+
+    def save_group_sets(self, group_sets: dict[str, Any]) -> None:
+        data = group_sets if isinstance(group_sets, dict) else {}
+        payload = {
+            "account_groups": self._normalize_group_set_values(data.get("account_groups")),
+            "group_groups": self._normalize_group_set_values(data.get("group_groups")),
+        }
+        self.group_sets_path.parent.mkdir(parents=True, exist_ok=True)
+        with self.group_sets_path.open("w", encoding="utf-8") as file:
+            json.dump(payload, file, ensure_ascii=False, indent=2)
+
+
+    def load_account_group_proxies(self) -> dict[str, dict[str, Any]]:
+        if not self.account_group_proxies_path.exists():
+            return {}
+        try:
+            with self.account_group_proxies_path.open("r", encoding="utf-8") as file:
+                data = json.load(file)
+        except Exception:
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        raw_items = data.get("account_group_proxies", data)
+        if not isinstance(raw_items, dict):
+            raw_items = {}
+
+        result: dict[str, dict[str, Any]] = {}
+        for group_name, raw_config in raw_items.items():
+            safe_group_name = str(group_name or "").strip()
+            if not safe_group_name:
+                continue
+            try:
+                result[safe_group_name] = normalize_proxy_config(raw_config, strict=False)
+            except Exception:
+                result[safe_group_name] = {
+                    "enabled": False,
+                    "proxy_type": "socks5",
+                    "host": "",
+                    "port": 0,
+                    "username": "",
+                    "password": "",
+                    "raw_proxy": "",
+                    "remark": "",
+                }
+        return result
+
+    def save_account_group_proxies(self, account_group_proxies: dict[str, Any]) -> None:
+        raw_items = account_group_proxies if isinstance(account_group_proxies, dict) else {}
+        payload_items: dict[str, dict[str, Any]] = {}
+        for group_name, raw_config in raw_items.items():
+            safe_group_name = str(group_name or "").strip()
+            if not safe_group_name:
+                continue
+            config = normalize_proxy_config(raw_config, strict=True)
+            if not config.get("enabled") and not str(config.get("raw_proxy", "") or "").strip() and not str(config.get("remark", "") or "").strip():
+                continue
+            validate_proxy_config(config)
+            payload_items[safe_group_name] = config
+
+        payload = {
+            "version": 1,
+            "account_group_proxies": payload_items,
+        }
+        self.account_group_proxies_path.parent.mkdir(parents=True, exist_ok=True)
+        with self.account_group_proxies_path.open("w", encoding="utf-8") as file:
+            json.dump(payload, file, ensure_ascii=False, indent=2)
 
     def save_accounts(self, accounts: list[AccountConfig]) -> None:
         save_accounts(str(self.accounts_path), accounts)

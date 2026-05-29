@@ -10,23 +10,15 @@ from app.gui.widgets.no_wheel import NoWheelComboBox
 
 
 class CheckComboBox(NoWheelComboBox):
-    """
-    基于 Qt Model/View 的可勾选多选下拉框。
-
-    修复点：
-    - 点击输入框区域也会弹出下拉，不只依赖右侧箭头。
-    - 点击选项时只切换勾选状态，不立即关闭下拉。
-    - 下拉视图给足宽度和高度，避免用户看不到可选项。
-    """
+    """可勾选多选下拉框，保留用户勾选顺序。"""
 
     checked_items_changed = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
-
         self._model = QStandardItemModel(self)
         self._popup_should_stay_open = False
-
+        self._checked_order: list[str] = []
         self.setModel(self._model)
         self.setView(QListView(self))
         self.setEditable(True)
@@ -40,6 +32,7 @@ class CheckComboBox(NoWheelComboBox):
 
     def clear_items(self) -> None:
         self._model.clear()
+        self._checked_order.clear()
         self._update_display_text()
 
     def add_check_item(
@@ -51,54 +44,68 @@ class CheckComboBox(NoWheelComboBox):
     ) -> None:
         item = QStandardItem(str(text or ""))
         item.setData(data, Qt.ItemDataRole.UserRole)
-        item.setFlags(
-            Qt.ItemFlag.ItemIsEnabled
-            | Qt.ItemFlag.ItemIsUserCheckable
-            | Qt.ItemFlag.ItemIsSelectable
-        )
-        if not enabled:
-            item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEnabled)
-        item.setCheckState(
-            Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
-        )
+        flags = Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsSelectable
+        if enabled:
+            flags |= Qt.ItemFlag.ItemIsEnabled
+        item.setFlags(flags)
+        item.setCheckState(Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked)
         self._model.appendRow(item)
+        key = self._key(data)
+        if checked and key and key not in self._checked_order:
+            self._checked_order.append(key)
+        self._cleanup_checked_order()
         self._update_display_text()
 
     def checked_data(self) -> list[Any]:
-        values: list[Any] = []
+        self._cleanup_checked_order()
+        key_to_data: dict[str, Any] = {}
+        checked_keys: list[str] = []
         for row in range(self._model.rowCount()):
             item = self._model.item(row)
-            if item is None:
+            if item is None or item.checkState() != Qt.CheckState.Checked:
                 continue
-            if item.checkState() == Qt.CheckState.Checked:
-                values.append(item.data(Qt.ItemDataRole.UserRole))
-        return values
+            data = item.data(Qt.ItemDataRole.UserRole)
+            key = self._key(data)
+            if key:
+                key_to_data[key] = data
+                if key not in checked_keys:
+                    checked_keys.append(key)
+        ordered_keys = [key for key in self._checked_order if key in key_to_data]
+        for key in checked_keys:
+            if key not in ordered_keys:
+                ordered_keys.append(key)
+        self._checked_order = ordered_keys
+        return [key_to_data[key] for key in ordered_keys]
 
     def checked_texts(self) -> list[str]:
-        texts: list[str] = []
+        self._cleanup_checked_order()
+        key_to_text: dict[str, str] = {}
         for row in range(self._model.rowCount()):
             item = self._model.item(row)
-            if item is None:
+            if item is None or item.checkState() != Qt.CheckState.Checked:
                 continue
-            if item.checkState() == Qt.CheckState.Checked:
-                texts.append(item.text())
-        return texts
+            key = self._key(item.data(Qt.ItemDataRole.UserRole))
+            if key:
+                key_to_text[key] = item.text()
+        return [key_to_text[key] for key in self._checked_order if key in key_to_text]
 
     def set_checked_data(self, values: list[Any]) -> None:
-        wanted = {str(value or "").strip() for value in values if str(value or "").strip()}
-
+        wanted_order: list[str] = []
+        for value in values or []:
+            key = self._key(value)
+            if key and key not in wanted_order:
+                wanted_order.append(key)
+        available_keys: set[str] = set()
         for row in range(self._model.rowCount()):
             item = self._model.item(row)
             if item is None:
                 continue
-
-            item_value = str(item.data(Qt.ItemDataRole.UserRole) or "").strip()
-            item.setCheckState(
-                Qt.CheckState.Checked
-                if item_value in wanted
-                else Qt.CheckState.Unchecked
-            )
-
+            key = self._key(item.data(Qt.ItemDataRole.UserRole))
+            if key:
+                available_keys.add(key)
+            item.setCheckState(Qt.CheckState.Checked if key in wanted_order else Qt.CheckState.Unchecked)
+        self._checked_order = [key for key in wanted_order if key in available_keys]
+        self._cleanup_checked_order()
         self._update_display_text()
         self.checked_items_changed.emit()
 
@@ -121,37 +128,56 @@ class CheckComboBox(NoWheelComboBox):
         if watched is self.lineEdit() and event.type() == QEvent.Type.MouseButtonRelease:
             self.showPopup()
             return True
-
         if watched is self.view().viewport() and event.type() == QEvent.Type.MouseButtonRelease:
             return True
-
         return super().eventFilter(watched, event)
 
     def _on_item_pressed(self, index) -> None:
         item = self._model.itemFromIndex(index)
-        if item is None:
+        if item is None or not item.isEnabled():
             return
-
-        if not item.isEnabled():
-            return
-
         self._popup_should_stay_open = True
-        item.setCheckState(
-            Qt.CheckState.Unchecked
-            if item.checkState() == Qt.CheckState.Checked
-            else Qt.CheckState.Checked
-        )
+        key = self._key(item.data(Qt.ItemDataRole.UserRole))
+        if item.checkState() == Qt.CheckState.Checked:
+            item.setCheckState(Qt.CheckState.Unchecked)
+            self._checked_order = [value for value in self._checked_order if value != key]
+        else:
+            item.setCheckState(Qt.CheckState.Checked)
+            if key and key not in self._checked_order:
+                self._checked_order.append(key)
+        self._cleanup_checked_order()
         self._update_display_text()
         self.checked_items_changed.emit()
+
+    @staticmethod
+    def _key(value: Any) -> str:
+        return str(value or "").strip()
+
+    def _cleanup_checked_order(self) -> None:
+        checked_keys: set[str] = set()
+        for row in range(self._model.rowCount()):
+            item = self._model.item(row)
+            if item is None:
+                continue
+            if item.checkState() == Qt.CheckState.Checked:
+                key = self._key(item.data(Qt.ItemDataRole.UserRole))
+                if key:
+                    checked_keys.add(key)
+        self._checked_order = [key for key in self._checked_order if key in checked_keys]
+        for row in range(self._model.rowCount()):
+            item = self._model.item(row)
+            if item is None or item.checkState() != Qt.CheckState.Checked:
+                continue
+            key = self._key(item.data(Qt.ItemDataRole.UserRole))
+            if key and key not in self._checked_order:
+                self._checked_order.append(key)
 
     def _update_display_text(self) -> None:
         texts = self.checked_texts()
         if not texts:
             self.lineEdit().setText("未选择")
             return
-
         if len(texts) <= 2:
             self.lineEdit().setText("、".join(texts))
             return
-
         self.lineEdit().setText(f"已选择 {len(texts)} 项")

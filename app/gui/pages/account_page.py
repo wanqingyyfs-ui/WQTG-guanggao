@@ -19,22 +19,17 @@ from app.gui.pages.layout_utils import style_table
 class AccountPage(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-
         self.accounts: list[AccountConfig] = []
         self.status_map: dict[str, tuple[str, str]] = {}
         self.default_account_enabled = True
         self.default_session_name_follow_account = True
-
-        self.table = QTableWidget(0, 7)
-        self.table.setHorizontalHeaderLabels(
-            ["账号名", "手机号", "API ID", "Session", "启用", "状态", "详情"]
-        )
+        self.table = QTableWidget(0, 8)
+        self.table.setHorizontalHeaderLabels(["账号名", "所属账号组", "手机号", "API ID", "Session", "启用", "状态", "详情"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         style_table(self.table)
-
         self.config_button = QPushButton("配置账号")
         self.delete_button = QPushButton("删除账号")
         self.up_button = QPushButton("上移")
@@ -42,7 +37,6 @@ class AccountPage(QWidget):
         self.login_button = QPushButton("登录账号")
         self.start_button = QPushButton("启动该账号")
         self.stop_button = QPushButton("停止该账号")
-
         self._build_ui()
         self.table.itemSelectionChanged.connect(self.update_action_buttons)
         self.update_action_buttons()
@@ -50,19 +44,14 @@ class AccountPage(QWidget):
     def _build_ui(self) -> None:
         title_label = QLabel("账号管理")
         title_label.setObjectName("PageTitleLabel")
-
         button_layout = QHBoxLayout()
         button_layout.setContentsMargins(0, 0, 0, 0)
         button_layout.setSpacing(10)
-        button_layout.addWidget(self.config_button)
-        button_layout.addWidget(self.delete_button)
-        button_layout.addWidget(self.up_button)
-        button_layout.addWidget(self.down_button)
+        for button in [self.config_button, self.delete_button, self.up_button, self.down_button]:
+            button_layout.addWidget(button)
         button_layout.addStretch(1)
-        button_layout.addWidget(self.login_button)
-        button_layout.addWidget(self.start_button)
-        button_layout.addWidget(self.stop_button)
-
+        for button in [self.login_button, self.start_button, self.stop_button]:
+            button_layout.addWidget(button)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
@@ -70,19 +59,11 @@ class AccountPage(QWidget):
         layout.addWidget(self.table, 1)
         layout.addLayout(button_layout)
 
-    def set_defaults(
-        self,
-        default_account_enabled: bool = True,
-        default_session_name_follow_account: bool = True,
-    ) -> None:
+    def set_defaults(self, default_account_enabled: bool = True, default_session_name_follow_account: bool = True) -> None:
         self.default_account_enabled = bool(default_account_enabled)
         self.default_session_name_follow_account = bool(default_session_name_follow_account)
 
-    def set_accounts(
-        self,
-        accounts: list[AccountConfig],
-        status_map: dict[str, tuple[str, str]],
-    ) -> None:
+    def set_accounts(self, accounts: list[AccountConfig], status_map: dict[str, tuple[str, str]]) -> None:
         selected_name = self.get_selected_account_name()
         self.accounts = list(accounts or [])
         self.status_map = dict(status_map or {})
@@ -92,26 +73,22 @@ class AccountPage(QWidget):
 
     def refresh_table(self) -> None:
         self.table.setRowCount(len(self.accounts))
-
         for row, account in enumerate(self.accounts):
             status, detail = self.status_map.get(account.account_name, ("stopped", "未启动"))
-
             enabled_item = QTableWidgetItem("是" if account.enabled else "否")
             enabled_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-
             self.table.setItem(row, 0, QTableWidgetItem(str(account.account_name)))
-            self.table.setItem(row, 1, QTableWidgetItem(str(account.phone)))
-            self.table.setItem(row, 2, QTableWidgetItem(str(account.api_id)))
-            self.table.setItem(row, 3, QTableWidgetItem(str(account.session_name)))
-            self.table.setItem(row, 4, enabled_item)
-            self.table.setItem(row, 5, QTableWidgetItem(self._status_label(status)))
-            self.table.setItem(row, 6, QTableWidgetItem(str(detail or "")))
+            self.table.setItem(row, 1, QTableWidgetItem(str(getattr(account, "account_group", "") or "")))
+            self.table.setItem(row, 2, QTableWidgetItem(str(account.phone)))
+            self.table.setItem(row, 3, QTableWidgetItem(str(account.api_id)))
+            self.table.setItem(row, 4, QTableWidgetItem(str(account.session_name)))
+            self.table.setItem(row, 5, enabled_item)
+            self.table.setItem(row, 6, QTableWidgetItem(self._status_label(status)))
+            self.table.setItem(row, 7, QTableWidgetItem(str(detail or "")))
 
     def get_selected_row(self) -> int:
         selected_rows = self.table.selectionModel().selectedRows()
-        if not selected_rows:
-            return -1
-        return selected_rows[0].row()
+        return -1 if not selected_rows else selected_rows[0].row()
 
     def get_selected_account_name(self) -> str:
         row = self.get_selected_row()
@@ -130,7 +107,6 @@ class AccountPage(QWidget):
         target = str(account_name or "").strip()
         if not target:
             return
-
         for row, account in enumerate(self.accounts):
             if str(account.account_name or "").strip() == target:
                 self.select_row(row)
@@ -143,7 +119,6 @@ class AccountPage(QWidget):
     def update_action_buttons(self) -> None:
         row = self.get_selected_row()
         has_selection = 0 <= row < len(self.accounts)
-
         self.config_button.setEnabled(True)
         self.delete_button.setEnabled(has_selection)
         self.up_button.setEnabled(has_selection and row > 0)
@@ -154,16 +129,6 @@ class AccountPage(QWidget):
 
     @staticmethod
     def _status_label(status: str) -> str:
+        status_map = {"idle": "空闲", "starting": "启动中", "running": "运行中", "logged_in": "已登录", "logging_in": "登录中", "stopped": "已停止", "disabled": "未启用", "error": "错误", "online": "在线"}
         normalized = str(status or "").strip()
-        status_map = {
-            "idle": "空闲",
-            "starting": "启动中",
-            "running": "运行中",
-            "logged_in": "已登录",
-            "logging_in": "登录中",
-            "stopped": "已停止",
-            "disabled": "未启用",
-            "error": "错误",
-            "online": "在线",
-        }
         return status_map.get(normalized, normalized or "未知")

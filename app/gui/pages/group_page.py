@@ -19,15 +19,12 @@ from app.gui.pages.layout_utils import style_table
 class GroupPage(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-
         self.groups: list[GroupConfig] = []
         self.default_group_enabled = True
         self.default_group_username_normalize = True
 
-        self.table = QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(
-            ["启用", "群组名称", "Chat ID", "Username/链接", "备注"]
-        )
+        self.table = QTableWidget(0, 6)
+        self.table.setHorizontalHeaderLabels(["启用", "群组名称", "所属群聊组", "Chat ID", "Username/链接", "备注"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
@@ -38,7 +35,6 @@ class GroupPage(QWidget):
         self.delete_button = QPushButton("删除群组")
         self.up_button = QPushButton("上移")
         self.down_button = QPushButton("下移")
-
         self._build_ui()
         self.table.itemSelectionChanged.connect(self.update_action_buttons)
         self.update_action_buttons()
@@ -46,7 +42,6 @@ class GroupPage(QWidget):
     def _build_ui(self) -> None:
         title_label = QLabel("群组管理")
         title_label.setObjectName("PageTitleLabel")
-
         button_layout = QHBoxLayout()
         button_layout.setContentsMargins(0, 0, 0, 0)
         button_layout.setSpacing(10)
@@ -55,7 +50,6 @@ class GroupPage(QWidget):
         button_layout.addWidget(self.up_button)
         button_layout.addWidget(self.down_button)
         button_layout.addStretch(1)
-
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
@@ -63,11 +57,7 @@ class GroupPage(QWidget):
         layout.addWidget(self.table, 1)
         layout.addLayout(button_layout)
 
-    def set_defaults(
-        self,
-        default_group_enabled: bool = True,
-        default_group_username_normalize: bool = True,
-    ) -> None:
+    def set_defaults(self, default_group_enabled: bool = True, default_group_username_normalize: bool = True) -> None:
         self.default_group_enabled = bool(default_group_enabled)
         self.default_group_username_normalize = bool(default_group_username_normalize)
 
@@ -80,22 +70,31 @@ class GroupPage(QWidget):
 
     def refresh_table(self) -> None:
         self.table.setRowCount(len(self.groups))
-
         for row, group in enumerate(self.groups):
             enabled_item = QTableWidgetItem("是" if group.enabled else "否")
             enabled_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-
             self.table.setItem(row, 0, enabled_item)
             self.table.setItem(row, 1, QTableWidgetItem(str(group.group_name or "")))
-            self.table.setItem(row, 2, QTableWidgetItem(str(group.chat_id or "")))
-            self.table.setItem(row, 3, QTableWidgetItem(str(group.username or "")))
-            self.table.setItem(row, 4, QTableWidgetItem(str(group.remark or "")))
+            self.table.setItem(row, 2, QTableWidgetItem("、".join(self._group_group_names(group))))
+            self.table.setItem(row, 3, QTableWidgetItem(str(group.chat_id or "")))
+            self.table.setItem(row, 4, QTableWidgetItem(str(group.username or "")))
+            self.table.setItem(row, 5, QTableWidgetItem(str(group.remark or "")))
+
+    @staticmethod
+    def _group_group_names(group: GroupConfig) -> list[str]:
+        result: list[str] = []
+        for item in getattr(group, "group_group_names", []) or []:
+            value = str(item or "").strip()
+            if value and value not in result:
+                result.append(value)
+        legacy = str(getattr(group, "group_group", "") or "").strip()
+        if legacy and legacy not in result:
+            result.insert(0, legacy)
+        return result
 
     def get_selected_row(self) -> int:
         selected_rows = self.table.selectionModel().selectedRows()
-        if not selected_rows:
-            return -1
-        return selected_rows[0].row()
+        return -1 if not selected_rows else selected_rows[0].row()
 
     def get_selected_group_id(self) -> str:
         row = self.get_selected_row()
@@ -114,7 +113,6 @@ class GroupPage(QWidget):
         target = str(group_id or "").strip()
         if not target:
             return
-
         for row, group in enumerate(self.groups):
             if str(group.group_id or "").strip() == target:
                 self.select_row(row)
@@ -127,7 +125,6 @@ class GroupPage(QWidget):
     def update_action_buttons(self) -> None:
         row = self.get_selected_row()
         has_selection = 0 <= row < len(self.groups)
-
         self.config_button.setEnabled(True)
         self.delete_button.setEnabled(has_selection)
         self.up_button.setEnabled(has_selection and row > 0)

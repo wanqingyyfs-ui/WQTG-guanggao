@@ -18,24 +18,16 @@ from PySide6.QtWidgets import (
 )
 
 from app.core.models import (
-    ACCOUNT_ROTATE_MODE_ROUND_ROBIN,
-    ACCOUNT_ROTATE_MODE_SINGLE,
-    GROUP_ROTATE_MODE_ROUND_ROBIN,
-    GROUP_ROTATE_MODE_SINGLE,
     MESSAGE_MODE_TEMPLATE,
     MESSAGE_MODE_TEXT,
-    SCHEDULE_MODE_DAILY,
-    SCHEDULE_MODE_INTERVAL,
+    PAIRING_MODE_ROTATE,
     AccountConfig,
     GroupConfig,
     SendTaskConfig,
     Settings,
     TemplateConfig,
 )
-from app.gui.pages.layout_utils import (
-    apply_large_inputs,
-    style_text_editor,
-)
+from app.gui.pages.layout_utils import apply_large_inputs, style_text_editor
 from app.gui.widgets.check_combo_box import CheckComboBox
 from app.gui.widgets.no_wheel import NoWheelComboBox, NoWheelDoubleSpinBox, NoWheelTimeEdit
 
@@ -48,53 +40,49 @@ class TaskForm(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-
         self.accounts: list[AccountConfig] = []
         self.groups: list[GroupConfig] = []
         self.templates: list[TemplateConfig] = []
+        self.tasks: list[SendTaskConfig] = []
+        self.account_group_definitions: list[str] = []
+        self.group_group_definitions: list[str] = []
         self.settings = Settings()
         self._current_task: SendTaskConfig | None = None
+        self._current_task_id = ""
 
         self.name_edit = QLineEdit()
         self.name_edit.setPlaceholderText("任务名称")
-
         self.enabled_check = QCheckBox("启用任务")
 
-        self.account_combo = CheckComboBox()
-        self.account_combo.lineEdit().setPlaceholderText("请选择发送账号")
-
-        self.group_combo = CheckComboBox()
-        self.group_combo.lineEdit().setPlaceholderText("请选择目标群组")
+        self.account_group_combo = CheckComboBox()
+        self.account_group_combo.lineEdit().setPlaceholderText("请选择账号组")
+        self.group_group_combo = CheckComboBox()
+        self.group_group_combo.lineEdit().setPlaceholderText("请选择群聊组")
 
         self.account_delay_min_seconds_spin = self._new_seconds_spin()
         self.account_delay_max_seconds_spin = self._new_seconds_spin()
-
         self.group_delay_min_seconds_spin = self._new_seconds_spin()
         self.group_delay_max_seconds_spin = self._new_seconds_spin()
+        self.interval_seconds_spin = self._new_seconds_spin()
+        self.interval_seconds_spin.setRange(0, MAX_SECONDS)
+        self.interval_seconds_spin.setToolTip("0 表示当前账号组小轮询结束后立即进入下一小轮询")
+
+        self.daily_window_enabled_check = QCheckBox("启用每日时间段")
+        self.daily_start_time_edit = NoWheelTimeEdit()
+        self.daily_start_time_edit.setDisplayFormat("HH:mm")
+        self.daily_start_time_edit.setTime(QTime(9, 0))
+        self.daily_end_time_edit = NoWheelTimeEdit()
+        self.daily_end_time_edit.setDisplayFormat("HH:mm")
+        self.daily_end_time_edit.setTime(QTime(21, 0))
 
         self.message_mode_combo = NoWheelComboBox()
         self.message_mode_combo.addItem("模板", MESSAGE_MODE_TEMPLATE)
         self.message_mode_combo.addItem("文本", MESSAGE_MODE_TEXT)
-
-        self.schedule_mode_combo = NoWheelComboBox()
-        self.schedule_mode_combo.addItem("间隔", SCHEDULE_MODE_INTERVAL)
-        self.schedule_mode_combo.addItem("每日", SCHEDULE_MODE_DAILY)
-
-        self.interval_seconds_spin = self._new_seconds_spin()
-        self.interval_seconds_spin.setRange(0, MAX_SECONDS)
-        self.interval_seconds_spin.setToolTip("0 表示任务完成后立即进入下一轮到期状态")
-
-        self.daily_time_edit = NoWheelTimeEdit()
-        self.daily_time_edit.setDisplayFormat("HH:mm")
-        self.daily_time_edit.setTime(QTime(9, 0))
-
         self.template_combo = CheckComboBox()
         self.template_combo.lineEdit().setPlaceholderText("请选择模板")
-
         self.text_edit = QPlainTextEdit()
         self.text_edit.setPlaceholderText("纯文本消息内容")
         style_text_editor(self.text_edit, 58)
-
         self.remark_edit = QPlainTextEdit()
         self.remark_edit.setPlaceholderText("备注")
         style_text_editor(self.remark_edit, 118)
@@ -103,52 +91,41 @@ class TaskForm(QWidget):
         self.save_button = QPushButton("保存")
         self._style_action_button(self.add_button)
         self._style_action_button(self.save_button)
-
         self._build_ui()
         self._connect_signals()
         self.clear_form()
 
     def _build_ui(self) -> None:
-        self.setMinimumSize(1020, 760)
-        self.setSizePolicy(
-            QSizePolicy.Policy.Preferred,
-            QSizePolicy.Policy.MinimumExpanding,
-        )
-
+        self.setMinimumSize(1060, 780)
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.MinimumExpanding)
         grid = QGridLayout()
         grid.setContentsMargins(10, 8, 10, 8)
         grid.setHorizontalSpacing(24)
         grid.setVerticalSpacing(16)
-        grid.setColumnMinimumWidth(0, 108)
-        grid.setColumnMinimumWidth(2, 108)
+        grid.setColumnMinimumWidth(0, 112)
+        grid.setColumnMinimumWidth(2, 112)
         grid.setColumnStretch(1, 1)
         grid.setColumnStretch(3, 1)
 
         self._add_labeled_widget(grid, 0, 0, "任务名称：", self.name_edit)
         grid.addWidget(self.enabled_check, 0, 2, 1, 2)
-
-        self._add_labeled_widget(grid, 1, 0, "发送账号池：", self.account_combo)
-        self._add_labeled_widget(grid, 1, 2, "目标群组池：", self.group_combo)
-
+        self._add_labeled_widget(grid, 1, 0, "账号组池：", self.account_group_combo)
+        self._add_labeled_widget(grid, 1, 2, "群聊组池：", self.group_group_combo)
         self._add_labeled_widget(grid, 2, 0, "账号延迟最小：", self.account_delay_min_seconds_spin)
         self._add_labeled_widget(grid, 2, 2, "账号延迟最大：", self.account_delay_max_seconds_spin)
-
         self._add_labeled_widget(grid, 3, 0, "群组延迟最小：", self.group_delay_min_seconds_spin)
         self._add_labeled_widget(grid, 3, 2, "群组延迟最大：", self.group_delay_max_seconds_spin)
-
-        self._add_labeled_widget(grid, 4, 0, "消息类型：", self.message_mode_combo)
-        self._add_labeled_widget(grid, 4, 2, "调度模式：", self.schedule_mode_combo)
-
-        self._add_labeled_widget(grid, 5, 0, "间隔时间：", self.interval_seconds_spin)
-        self._add_labeled_widget(grid, 5, 2, "每日时间：", self.daily_time_edit)
-
-        self._add_labeled_widget(grid, 6, 0, "模板池：", self.template_combo)
+        self._add_labeled_widget(grid, 4, 0, "任务间隔：", self.interval_seconds_spin)
+        grid.addWidget(self.daily_window_enabled_check, 4, 2, 1, 2)
+        self._add_labeled_widget(grid, 5, 0, "每日开始时间：", self.daily_start_time_edit)
+        self._add_labeled_widget(grid, 5, 2, "每日结束时间：", self.daily_end_time_edit)
+        self._add_labeled_widget(grid, 6, 0, "消息类型：", self.message_mode_combo)
+        self._add_labeled_widget(grid, 6, 2, "模板池：", self.template_combo)
 
         text_label = QLabel("文本内容：")
         text_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
         grid.addWidget(text_label, 7, 0)
         grid.addWidget(self.text_edit, 7, 1, 1, 3)
-
         remark_label = QLabel("备注：")
         remark_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
         grid.addWidget(remark_label, 8, 0)
@@ -169,21 +146,9 @@ class TaskForm(QWidget):
         layout.addLayout(grid)
         layout.addStretch(1)
         layout.addLayout(button_layout)
-
         apply_large_inputs(self)
-        self._apply_compact_text_editor_heights()
-
-    def _apply_compact_text_editor_heights(self) -> None:
         self.text_edit.setFixedHeight(58)
-        self.text_edit.setSizePolicy(
-            QSizePolicy.Policy.Expanding,
-            QSizePolicy.Policy.Fixed,
-        )
         self.remark_edit.setFixedHeight(118)
-        self.remark_edit.setSizePolicy(
-            QSizePolicy.Policy.Expanding,
-            QSizePolicy.Policy.Fixed,
-        )
 
     @staticmethod
     def _style_action_button(button: QPushButton) -> None:
@@ -191,13 +156,7 @@ class TaskForm(QWidget):
         button.setMinimumHeight(44)
 
     @staticmethod
-    def _add_labeled_widget(
-        grid: QGridLayout,
-        row: int,
-        label_column: int,
-        label_text: str,
-        widget: QWidget,
-    ) -> None:
+    def _add_labeled_widget(grid: QGridLayout, row: int, label_column: int, label_text: str, widget: QWidget) -> None:
         label = QLabel(label_text)
         label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         grid.addWidget(label, row, label_column)
@@ -207,6 +166,7 @@ class TaskForm(QWidget):
         self.add_button.clicked.connect(self.add_requested.emit)
         self.save_button.clicked.connect(self.save_requested.emit)
         self.message_mode_combo.currentIndexChanged.connect(self._update_message_mode_state)
+        self.daily_window_enabled_check.stateChanged.connect(self._update_daily_window_state)
 
     @staticmethod
     def _new_seconds_spin() -> NoWheelDoubleSpinBox:
@@ -223,38 +183,48 @@ class TaskForm(QWidget):
         groups: list[GroupConfig],
         templates: list[TemplateConfig],
         settings: Settings | None = None,
+        tasks: list[SendTaskConfig] | None = None,
+        current_task_id: str | None = None,
+        account_group_definitions: list[str] | None = None,
+        group_group_definitions: list[str] | None = None,
     ) -> None:
         self.accounts = [item for item in list(accounts or []) if bool(getattr(item, "enabled", True))]
         self.groups = [item for item in list(groups or []) if bool(getattr(item, "enabled", True))]
         self.templates = [item for item in list(templates or []) if bool(getattr(item, "enabled", True))]
-
         if settings is not None:
             self.settings = settings
+        if tasks is not None:
+            self.tasks = list(tasks or [])
+        if current_task_id is not None:
+            self._current_task_id = str(current_task_id or "").strip()
+        if account_group_definitions is not None:
+            self.account_group_definitions = self._normalize_text_values(account_group_definitions)
+        if group_group_definitions is not None:
+            self.group_group_definitions = self._normalize_text_values(group_group_definitions)
 
-        selected_accounts = self.account_combo.checked_data()
-        selected_groups = self.group_combo.checked_data()
+        selected_account_groups = self.account_group_combo.checked_data()
+        selected_group_groups = self.group_group_combo.checked_data()
         selected_templates = self.template_combo.checked_data()
-
-        self._populate_account_combo()
-        self._populate_group_combo()
+        self._populate_account_group_combo()
+        self._populate_group_group_combo()
         self._populate_template_combo()
-
-        self.account_combo.set_checked_data(self._normalize_text_values(selected_accounts))
-        self.group_combo.set_checked_data(self._normalize_text_values(selected_groups))
+        self.account_group_combo.set_checked_data(self._normalize_text_values(selected_account_groups))
+        self.group_group_combo.set_checked_data(self._normalize_text_values(selected_group_groups))
         self.template_combo.set_checked_data(self._normalize_text_values(selected_templates))
 
-    def _populate_account_combo(self) -> None:
-        self.account_combo.clear_items()
-        for account in self.accounts:
-            account_name = str(account.account_name or "")
-            self.account_combo.add_check_item(account_name, account_name)
+    def _populate_account_group_combo(self) -> None:
+        used_by = self._account_group_used_by_other_enabled_tasks()
+        self.account_group_combo.clear_items()
+        for group_name in self._available_account_group_names():
+            owner = used_by.get(group_name, "")
+            enabled = not bool(owner)
+            label = group_name if enabled else f"{group_name}（已被任务 {owner} 占用）"
+            self.account_group_combo.add_check_item(label, group_name, enabled=enabled)
 
-    def _populate_group_combo(self) -> None:
-        self.group_combo.clear_items()
-        for group in self.groups:
-            group_id = str(group.group_id or "")
-            label = f"{group.group_name} ({group.chat_id})"
-            self.group_combo.add_check_item(label, group_id)
+    def _populate_group_group_combo(self) -> None:
+        self.group_group_combo.clear_items()
+        for group_name in self._available_group_group_names():
+            self.group_group_combo.add_check_item(group_name, group_name)
 
     def _populate_template_combo(self) -> None:
         self.template_combo.clear_items()
@@ -263,160 +233,145 @@ class TaskForm(QWidget):
             label = str(template.template_name or template.template_id or "")
             self.template_combo.add_check_item(label, template_id)
 
+    def _available_account_group_names(self) -> list[str]:
+        result = self._normalize_text_values(self.account_group_definitions)
+        for account in self.accounts:
+            value = str(getattr(account, "account_group", "") or "").strip()
+            if value and value not in result:
+                result.append(value)
+        return result
+
+    def _available_group_group_names(self) -> list[str]:
+        result = self._normalize_text_values(self.group_group_definitions)
+        for group in self.groups:
+            for value in self._group_group_names(group):
+                if value and value not in result:
+                    result.append(value)
+        return result
+
+    @staticmethod
+    def _group_group_names(group: GroupConfig) -> list[str]:
+        result: list[str] = []
+        for item in getattr(group, "group_group_names", []) or []:
+            value = str(item or "").strip()
+            if value and value not in result:
+                result.append(value)
+        legacy = str(getattr(group, "group_group", "") or "").strip()
+        if legacy and legacy not in result:
+            result.insert(0, legacy)
+        return result
+
+    def _account_group_used_by_other_enabled_tasks(self) -> dict[str, str]:
+        result: dict[str, str] = {}
+        for task in self.tasks:
+            if not bool(getattr(task, "enabled", True)):
+                continue
+            task_id = str(getattr(task, "task_id", "") or "").strip()
+            if task_id and task_id == self._current_task_id:
+                continue
+            task_name = str(getattr(task, "task_name", "") or task_id or "未知任务")
+            for group_name in getattr(task, "account_group_names", []) or []:
+                value = str(group_name or "").strip()
+                if value and value not in result:
+                    result[value] = task_name
+        return result
+
     def load_task(self, task: SendTaskConfig) -> None:
         self._current_task = task
-
+        self._current_task_id = str(getattr(task, "task_id", "") or "").strip()
         self.name_edit.setText(str(task.task_name or ""))
         self.enabled_check.setChecked(bool(task.enabled))
-        self.account_combo.set_checked_data(self._task_account_names(task))
-
-        self.account_delay_min_seconds_spin.setValue(
-            self._ms_to_seconds(getattr(task, "account_delay_min_ms", 0))
+        self.set_context(
+            self.accounts,
+            self.groups,
+            self.templates,
+            self.settings,
+            self.tasks,
+            self._current_task_id,
+            self.account_group_definitions,
+            self.group_group_definitions,
         )
-        self.account_delay_max_seconds_spin.setValue(
-            self._ms_to_seconds(getattr(task, "account_delay_max_ms", 0))
-        )
-
-        self.group_combo.set_checked_data(self._task_group_ids(task))
-        self.group_delay_min_seconds_spin.setValue(
-            self._ms_to_seconds(getattr(task, "group_delay_min_ms", 0))
-        )
-        self.group_delay_max_seconds_spin.setValue(
-            self._ms_to_seconds(getattr(task, "group_delay_max_ms", 0))
-        )
-
+        self.account_group_combo.set_checked_data(self._task_account_group_names(task))
+        self.group_group_combo.set_checked_data(self._task_group_group_names(task))
+        self.account_delay_min_seconds_spin.setValue(self._ms_to_seconds(getattr(task, "account_delay_min_ms", 0)))
+        self.account_delay_max_seconds_spin.setValue(self._ms_to_seconds(getattr(task, "account_delay_max_ms", 0)))
+        self.group_delay_min_seconds_spin.setValue(self._ms_to_seconds(getattr(task, "group_delay_min_ms", 0)))
+        self.group_delay_max_seconds_spin.setValue(self._ms_to_seconds(getattr(task, "group_delay_max_ms", 0)))
+        self.interval_seconds_spin.setValue(self._ms_to_seconds(getattr(task, "interval_ms", 3600000)))
+        self.daily_window_enabled_check.setChecked(bool(getattr(task, "daily_window_enabled", False)))
+        self.daily_start_time_edit.setTime(self._time_from_text(str(getattr(task, "daily_start_time", "09:00") or "09:00")))
+        self.daily_end_time_edit.setTime(self._time_from_text(str(getattr(task, "daily_end_time", "21:00") or "21:00")))
         self._set_combo_value(self.message_mode_combo, str(task.message_mode or MESSAGE_MODE_TEMPLATE))
         self.text_edit.setPlainText(str(task.text or ""))
         self.template_combo.set_checked_data(self._task_template_ids(task))
-        self._set_combo_value(self.schedule_mode_combo, str(task.schedule_mode or SCHEDULE_MODE_INTERVAL))
-        self.interval_seconds_spin.setValue(self._ms_to_seconds(getattr(task, "interval_ms", 3600000)))
-        self.daily_time_edit.setTime(self._time_from_text(str(task.daily_time or "09:00")))
         self.remark_edit.setPlainText(str(task.remark or ""))
-
         self._update_message_mode_state()
+        self._update_daily_window_state()
 
     def clear_form(self) -> None:
         self._current_task = None
-
+        self._current_task_id = ""
         self.name_edit.clear()
         self.enabled_check.setChecked(True)
-        self.account_combo.set_checked_data([])
-        self.group_combo.set_checked_data([])
+        self.account_group_combo.set_checked_data([])
+        self.group_group_combo.set_checked_data([])
         self.template_combo.set_checked_data([])
-
-        self.account_delay_min_seconds_spin.setValue(
-            self._ms_to_seconds(getattr(self.settings, "default_task_account_delay_min_ms", 0))
-        )
-        self.account_delay_max_seconds_spin.setValue(
-            self._ms_to_seconds(getattr(self.settings, "default_task_account_delay_max_ms", 0))
-        )
-
-        self.group_delay_min_seconds_spin.setValue(
-            self._ms_to_seconds(getattr(self.settings, "default_task_group_delay_min_ms", 0))
-        )
-        self.group_delay_max_seconds_spin.setValue(
-            self._ms_to_seconds(getattr(self.settings, "default_task_group_delay_max_ms", 0))
-        )
-
-        self._set_combo_value(
-            self.message_mode_combo,
-            str(getattr(self.settings, "default_task_message_mode", MESSAGE_MODE_TEMPLATE)),
-        )
+        self.account_delay_min_seconds_spin.setValue(self._ms_to_seconds(getattr(self.settings, "default_task_account_delay_min_ms", 0)))
+        self.account_delay_max_seconds_spin.setValue(self._ms_to_seconds(getattr(self.settings, "default_task_account_delay_max_ms", 0)))
+        self.group_delay_min_seconds_spin.setValue(self._ms_to_seconds(getattr(self.settings, "default_task_group_delay_min_ms", 0)))
+        self.group_delay_max_seconds_spin.setValue(self._ms_to_seconds(getattr(self.settings, "default_task_group_delay_max_ms", 0)))
+        self.interval_seconds_spin.setValue(self._ms_to_seconds(getattr(self.settings, "default_task_interval_ms", 3600000)))
+        self.daily_window_enabled_check.setChecked(bool(getattr(self.settings, "default_task_daily_window_enabled", False)))
+        self.daily_start_time_edit.setTime(self._time_from_text(str(getattr(self.settings, "default_task_daily_start_time", "09:00"))))
+        self.daily_end_time_edit.setTime(self._time_from_text(str(getattr(self.settings, "default_task_daily_end_time", "21:00"))))
+        self._set_combo_value(self.message_mode_combo, str(getattr(self.settings, "default_task_message_mode", MESSAGE_MODE_TEMPLATE)))
         self.text_edit.clear()
-        self._set_combo_value(
-            self.schedule_mode_combo,
-            str(getattr(self.settings, "default_task_schedule_mode", SCHEDULE_MODE_INTERVAL)),
-        )
-        self.interval_seconds_spin.setValue(
-            self._ms_to_seconds(getattr(self.settings, "default_task_interval_ms", 3600000))
-        )
-        self.daily_time_edit.setTime(
-            self._time_from_text(str(getattr(self.settings, "default_task_daily_time", "09:00")))
-        )
         self.remark_edit.clear()
         self._update_message_mode_state()
+        self._update_daily_window_state()
 
     def get_form_task(self) -> SendTaskConfig:
         existing = self._current_task
         task_id = str(getattr(existing, "task_id", "") or "").strip() if existing else ""
         if not task_id:
             task_id = uuid.uuid4().hex
-
-        last_run_at = str(getattr(existing, "last_run_at", "") or "") if existing else ""
-        next_run_at = str(getattr(existing, "next_run_at", "") or "") if existing else ""
-        current_account_index = self._safe_non_negative_int(
-            getattr(existing, "current_account_index", 0) if existing else 0,
-            0,
-        )
-        current_group_index = self._safe_non_negative_int(
-            getattr(existing, "current_group_index", 0) if existing else 0,
-            0,
-        )
-
-        account_names = self._normalize_text_values(self.account_combo.checked_data())
-        account_rotate_mode = (
-            ACCOUNT_ROTATE_MODE_ROUND_ROBIN
-            if len(account_names) > 1
-            else ACCOUNT_ROTATE_MODE_SINGLE
-        )
-        account_name = account_names[0] if account_names else ""
-        current_account_index = current_account_index % len(account_names) if account_names else 0
-
-        group_ids = self._normalize_text_values(self.group_combo.checked_data())
-        group_rotate_mode = (
-            GROUP_ROTATE_MODE_ROUND_ROBIN
-            if len(group_ids) > 1
-            else GROUP_ROTATE_MODE_SINGLE
-        )
-        group_id = group_ids[0] if group_ids else ""
-        current_group_index = current_group_index % len(group_ids) if group_ids else 0
-
+        account_group_names = self._normalize_text_values(self.account_group_combo.checked_data())
+        group_group_names = self._normalize_text_values(self.group_group_combo.checked_data())
         account_delay_min_ms = self._seconds_to_ms(self.account_delay_min_seconds_spin.value())
         account_delay_max_ms = self._seconds_to_ms(self.account_delay_max_seconds_spin.value())
         if account_delay_max_ms < account_delay_min_ms:
             raise ValueError("账号延迟最大值不能小于账号延迟最小值")
-
         group_delay_min_ms = self._seconds_to_ms(self.group_delay_min_seconds_spin.value())
         group_delay_max_ms = self._seconds_to_ms(self.group_delay_max_seconds_spin.value())
         if group_delay_max_ms < group_delay_min_ms:
             raise ValueError("群组延迟最大值不能小于群组延迟最小值")
-
-        template_ids = self._normalize_text_values(self.template_combo.checked_data())
-        template_id = template_ids[0] if template_ids else ""
-
         interval_ms = self._seconds_to_ms(self.interval_seconds_spin.value())
-        daily_time = self.daily_time_edit.time().toString("HH:mm")
-
+        template_ids = self._normalize_text_values(self.template_combo.checked_data())
+        daily_start_time = self.daily_start_time_edit.time().toString("HH:mm")
+        daily_end_time = self.daily_end_time_edit.time().toString("HH:mm")
         return SendTaskConfig(
             task_id=task_id,
             task_name=self.name_edit.text().strip(),
             enabled=self.enabled_check.isChecked(),
-            account_name=account_name,
-            account_names=account_names,
-            account_rotate_mode=account_rotate_mode,
-            current_account_index=current_account_index,
+            account_group_names=account_group_names,
+            group_group_names=group_group_names,
+            pairing_mode=PAIRING_MODE_ROTATE,
             account_delay_min_ms=account_delay_min_ms,
             account_delay_max_ms=account_delay_max_ms,
             account_delay_seconds=int(account_delay_min_ms // 1000),
-            group_id=group_id,
-            group_ids=group_ids,
-            group_rotate_mode=group_rotate_mode,
-            current_group_index=current_group_index,
             group_delay_min_ms=group_delay_min_ms,
             group_delay_max_ms=group_delay_max_ms,
             group_delay_seconds=int(group_delay_min_ms // 1000),
+            interval_ms=interval_ms,
+            interval_seconds=int(interval_ms // 1000),
+            daily_window_enabled=self.daily_window_enabled_check.isChecked(),
+            daily_start_time=daily_start_time,
+            daily_end_time=daily_end_time,
             message_mode=str(self.message_mode_combo.currentData() or MESSAGE_MODE_TEMPLATE),
             text=self.text_edit.toPlainText().strip(),
             template_ids=template_ids,
-            template_id=template_id,
-            schedule_mode=str(self.schedule_mode_combo.currentData() or SCHEDULE_MODE_INTERVAL),
-            interval_ms=interval_ms,
-            interval_seconds=int(interval_ms // 1000),
-            daily_time=daily_time,
-            random_delay_min=0,
-            random_delay_max=0,
-            last_run_at=last_run_at,
-            next_run_at=next_run_at,
+            template_id=template_ids[0] if template_ids else "",
+            last_run_at=str(getattr(existing, "last_run_at", "") or "") if existing else "",
             remark=self.remark_edit.toPlainText().strip(),
         )
 
@@ -425,10 +380,10 @@ class TaskForm(QWidget):
         self.text_edit.setEnabled(mode == MESSAGE_MODE_TEXT)
         self.template_combo.setEnabled(mode == MESSAGE_MODE_TEMPLATE)
 
-    @staticmethod
-    def _style_action_button(button: QPushButton) -> None:
-        button.setMinimumWidth(150)
-        button.setMinimumHeight(44)
+    def _update_daily_window_state(self) -> None:
+        enabled = self.daily_window_enabled_check.isChecked()
+        self.daily_start_time_edit.setEnabled(enabled)
+        self.daily_end_time_edit.setEnabled(enabled)
 
     @staticmethod
     def _normalize_text_values(values: list[Any]) -> list[str]:
@@ -466,44 +421,16 @@ class TaskForm(QWidget):
         return round(max(0, ms) / 1000.0, 3)
 
     @staticmethod
-    def _safe_non_negative_int(value: Any, default: int = 0) -> int:
-        try:
-            number = int(value)
-        except (TypeError, ValueError):
-            number = default
-        return max(0, number)
+    def _task_account_group_names(task: SendTaskConfig) -> list[str]:
+        return TaskForm._normalize_text_values(list(getattr(task, "account_group_names", []) or []))
 
     @staticmethod
-    def _task_account_names(task: SendTaskConfig) -> list[str]:
-        result: list[str] = []
-        for item in getattr(task, "account_names", []) or []:
-            value = str(item or "").strip()
-            if value and value not in result:
-                result.append(value)
-        legacy = str(getattr(task, "account_name", "") or "").strip()
-        if legacy and legacy not in result:
-            result.insert(0, legacy)
-        return result
-
-    @staticmethod
-    def _task_group_ids(task: SendTaskConfig) -> list[str]:
-        result: list[str] = []
-        for item in getattr(task, "group_ids", []) or []:
-            value = str(item or "").strip()
-            if value and value not in result:
-                result.append(value)
-        legacy = str(getattr(task, "group_id", "") or "").strip()
-        if legacy and legacy not in result:
-            result.insert(0, legacy)
-        return result
+    def _task_group_group_names(task: SendTaskConfig) -> list[str]:
+        return TaskForm._normalize_text_values(list(getattr(task, "group_group_names", []) or []))
 
     @staticmethod
     def _task_template_ids(task: SendTaskConfig) -> list[str]:
-        result: list[str] = []
-        for item in getattr(task, "template_ids", []) or []:
-            value = str(item or "").strip()
-            if value and value not in result:
-                result.append(value)
+        result = TaskForm._normalize_text_values(list(getattr(task, "template_ids", []) or []))
         legacy = str(getattr(task, "template_id", "") or "").strip()
         if legacy and legacy not in result:
             result.insert(0, legacy)
