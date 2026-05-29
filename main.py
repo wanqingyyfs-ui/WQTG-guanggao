@@ -15,7 +15,7 @@ from app.gui.tgapipldc_panel_bootstrap import install_tgapipldc_panel
 
 install_tgapipldc_panel()
 
-from app.gui.main_window_grouped import MainWindow
+from app.gui.main_window import MainWindow
 
 APP_NAME = "Telegram 用户号群发任务面板"
 ORGANIZATION_NAME = "wanqingyyfs"

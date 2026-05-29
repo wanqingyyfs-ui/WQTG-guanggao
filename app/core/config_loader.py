@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
+
+from app.core.json_utils import atomic_write_json, read_json_file
 
 from app.core.models import (
     AccountConfig,
@@ -21,18 +22,11 @@ from app.core.models import (
 
 
 def _read_json_file(file_path: str | Path) -> Any:
-    path = Path(file_path).expanduser()
-    if not path.exists():
-        raise FileNotFoundError(f"配置文件不存在: {file_path}")
-    with path.open("r", encoding="utf-8") as f:
-        return json.load(f)
+    return read_json_file(file_path)
 
 
 def _write_json_file(file_path: str | Path, data: Any) -> None:
-    path = Path(file_path).expanduser()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    atomic_write_json(file_path, data)
 
 
 def _as_dict(value: Any) -> dict[str, Any]:
@@ -220,13 +214,12 @@ def load_tasks(file_path: str) -> list[SendTaskConfig]:
     if not isinstance(data, list):
         raise ValueError("tasks.json 必须是数组")
     tasks: list[SendTaskConfig] = []
-    skipped_legacy_count = 0
+    # 旧账号池/群组池任务在新版中不再运行。读取时只忽略，不在读取阶段自动覆盖 tasks.json。
     for raw_item in data:
         item = _as_dict(raw_item)
         account_group_names = _to_str_list(item.get("account_group_names"))
         group_group_names = _to_str_list(item.get("group_group_names"))
         if not account_group_names or not group_group_names:
-            skipped_legacy_count += 1
             continue
         account_delay_min_ms, account_delay_max_ms = _normalize_ms_range(
             item, "account_delay_min_ms", "account_delay_max_ms", "account_delay_seconds"
@@ -262,8 +255,6 @@ def load_tasks(file_path: str) -> list[SendTaskConfig]:
                 remark=_to_str(item.get("remark", "")),
             )
         )
-    if skipped_legacy_count:
-        save_tasks(file_path, tasks)
     return tasks
 
 

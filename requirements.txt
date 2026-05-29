@@ -1,7 +1,8 @@
 PySide6==6.11.0
 Telethon==1.43.2
-requests
-playwright
-pandas
-python-dotenv
-loguru
+PySocks==1.7.1
+requests>=2.32.0,<3
+playwright>=1.48.0,<2
+pandas>=2.2.0,<3
+python-dotenv>=1.0.1,<2
+loguru>=0.7.2,<1

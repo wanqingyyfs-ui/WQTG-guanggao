@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import json
 import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from app.core.json_utils import atomic_write_json, read_json_file
 from app.services.config_service import ConfigService
 
 
@@ -24,8 +24,7 @@ class GroupPairingRuntimeService:
         if not self.state_path.exists():
             return {"version": 1, "updated_at": self._now(), "tasks": {}}
         try:
-            with self.state_path.open("r", encoding="utf-8") as f:
-                data = json.load(f)
+            data = read_json_file(self.state_path, default={"version": 1, "updated_at": self._now(), "tasks": {}})
         except Exception:
             return {"version": 1, "updated_at": self._now(), "tasks": {}}
         if not isinstance(data, dict):
@@ -39,12 +38,8 @@ class GroupPairingRuntimeService:
         return data
 
     def _write_state(self, data: dict[str, Any]) -> None:
-        self.state_path.parent.mkdir(parents=True, exist_ok=True)
         data["updated_at"] = self._now()
-        temp_path = self.state_path.with_suffix(self.state_path.suffix + ".tmp")
-        with temp_path.open("w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        temp_path.replace(self.state_path)
+        atomic_write_json(self.state_path, data)
 
     def init_task(
         self,

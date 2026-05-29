@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+from app.core.json_utils import atomic_write_json, read_json_file
 from app.core.config_loader import (
     load_accounts,
     load_groups,
@@ -149,8 +150,7 @@ class ConfigService:
         if not self.group_sets_path.exists():
             return {"account_groups": [], "group_groups": []}
         try:
-            with self.group_sets_path.open("r", encoding="utf-8") as file:
-                data = json.load(file)
+            data = read_json_file(self.group_sets_path, default={})
         except Exception:
             data = {}
         if not isinstance(data, dict):
@@ -166,17 +166,14 @@ class ConfigService:
             "account_groups": self._normalize_group_set_values(data.get("account_groups")),
             "group_groups": self._normalize_group_set_values(data.get("group_groups")),
         }
-        self.group_sets_path.parent.mkdir(parents=True, exist_ok=True)
-        with self.group_sets_path.open("w", encoding="utf-8") as file:
-            json.dump(payload, file, ensure_ascii=False, indent=2)
+        atomic_write_json(self.group_sets_path, payload)
 
 
     def load_account_group_proxies(self) -> dict[str, dict[str, Any]]:
         if not self.account_group_proxies_path.exists():
             return {}
         try:
-            with self.account_group_proxies_path.open("r", encoding="utf-8") as file:
-                data = json.load(file)
+            data = read_json_file(self.account_group_proxies_path, default={})
         except Exception:
             data = {}
         if not isinstance(data, dict):
@@ -222,9 +219,7 @@ class ConfigService:
             "version": 1,
             "account_group_proxies": payload_items,
         }
-        self.account_group_proxies_path.parent.mkdir(parents=True, exist_ok=True)
-        with self.account_group_proxies_path.open("w", encoding="utf-8") as file:
-            json.dump(payload, file, ensure_ascii=False, indent=2)
+        atomic_write_json(self.account_group_proxies_path, payload)
 
     def save_accounts(self, accounts: list[AccountConfig]) -> None:
         save_accounts(str(self.accounts_path), accounts)

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from typing import Any
 
 
@@ -465,6 +465,9 @@ class Settings:
     template_source_account_name: str = ""
     template_source_chat_id: int = 0
 
+    max_concurrent_account_starts: int = 1
+    account_start_gap_seconds: float = 2.0
+
     ad_probability: int = 75
     noise_probability: int = 22
     skip_probability: int = 3
@@ -523,6 +526,8 @@ class Settings:
         self.default_send_interval_seconds = max(0.0, _to_float(self.default_send_interval_seconds, 1.0))
         self.template_source_account_name = str(self.template_source_account_name or "").strip()
         self.template_source_chat_id = _to_int(self.template_source_chat_id, 0)
+        self.max_concurrent_account_starts = max(1, min(10, _to_positive_int(self.max_concurrent_account_starts, 1)))
+        self.account_start_gap_seconds = max(0.0, min(30.0, _to_float(self.account_start_gap_seconds, 2.0)))
         self.ad_probability = _normalize_probability(self.ad_probability, 75)
         self.noise_probability = _normalize_probability(self.noise_probability, 22)
         self.skip_probability = _normalize_probability(self.skip_probability, 3)
@@ -568,7 +573,8 @@ class Settings:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Settings":
         safe_data = data if isinstance(data, dict) else {}
-        kwargs = {field_name: safe_data.get(field_name, getattr(cls(), field_name)) for field_name in cls().__dataclass_fields__.keys()}
+        default_instance = cls()
+        kwargs = {item.name: safe_data.get(item.name, getattr(default_instance, item.name)) for item in fields(cls)}
         return cls(**kwargs)
 
     @property
