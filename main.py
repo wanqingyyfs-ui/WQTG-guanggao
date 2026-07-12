@@ -3,6 +3,7 @@ from __future__ import annotations
 import ctypes
 import faulthandler
 import multiprocessing
+import os
 import sys
 import traceback
 from datetime import datetime
@@ -15,6 +16,7 @@ from app.gui.main_window import MainWindow
 
 APP_NAME = "Telegram 用户号群发任务面板"
 ORGANIZATION_NAME = "wanqingyyfs"
+RUNTIME_DATA_APP_NAME = "万青TG群发任务"
 WINDOW_ICON_NAME = "app.ico"
 LOGS_DIR_NAME = "logs"
 STARTUP_ERROR_LOG_NAME = "startup_error.log"
@@ -30,9 +32,16 @@ def resource_path(relative_path: str) -> Path:
     return project_root() / relative_path
 
 
+def local_appdata_dir() -> Path:
+    local_appdata = os.environ.get("LOCALAPPDATA")
+    if local_appdata:
+        return Path(local_appdata).expanduser()
+    return Path.home() / "AppData" / "Local"
+
+
 def runtime_logs_dir() -> Path:
-    if hasattr(sys, "_MEIPASS"):
-        return Path.cwd() / LOGS_DIR_NAME
+    if getattr(sys, "frozen", False):
+        return local_appdata_dir() / RUNTIME_DATA_APP_NAME / LOGS_DIR_NAME
     return project_root() / LOGS_DIR_NAME
 
 
@@ -54,8 +63,7 @@ def enable_fault_handler() -> None:
     try:
         logs_dir = runtime_logs_dir()
         logs_dir.mkdir(parents=True, exist_ok=True)
-        fault_log_path = logs_dir / "fatal_error.log"
-        fault_log_file = fault_log_path.open("a", encoding="utf-8")
+        fault_log_file = (logs_dir / "fatal_error.log").open("a", encoding="utf-8")
         faulthandler.enable(file=fault_log_file, all_threads=True)
     except Exception:
         try:
@@ -68,9 +76,8 @@ def write_startup_error(error_text: str) -> None:
     try:
         logs_dir = runtime_logs_dir()
         logs_dir.mkdir(parents=True, exist_ok=True)
-        log_path = startup_error_log_path()
         now_text = datetime.now().isoformat(timespec="seconds")
-        with log_path.open("a", encoding="utf-8") as file:
+        with startup_error_log_path().open("a", encoding="utf-8") as file:
             file.write(f"\n===== {now_text} =====\n")
             file.write(error_text)
             if not error_text.endswith("\n"):
@@ -113,7 +120,6 @@ def create_application() -> QApplication:
 
 
 def main() -> int:
-    multiprocessing.freeze_support()
     setup_windows_app_id()
     enable_fault_handler()
     install_exception_hook()
@@ -128,9 +134,15 @@ def main() -> int:
         write_startup_error(error_text)
         app = QApplication.instance()
         if app is not None:
-            QMessageBox.critical(None, "启动失败", f"程序启动失败：\n\n{error_text}\n\n详细日志已写入：{startup_error_log_path()}")
+            QMessageBox.critical(
+                None,
+                "启动失败",
+                f"程序启动失败：\n\n{error_text}\n\n详细日志已写入：{startup_error_log_path()}",
+            )
         return 1
 
 
 if __name__ == "__main__":
+    # Python and PyInstaller both require this before starting spawned workers.
+    multiprocessing.freeze_support()
     raise SystemExit(main())
