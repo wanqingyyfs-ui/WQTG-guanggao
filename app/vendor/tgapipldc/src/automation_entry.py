@@ -11,6 +11,7 @@ from typing import Any
 from automation_adapter import install_login_adapter, install_profile_adapter
 from automation_calibration_picker import CalibrationPickerInstaller
 from automation_locator_engine import LocatorConfigStore, build_selector_for_element
+from automation_playwright_pump import wait_for_calibration_close
 from profile_lock import ProfileLock
 from proxy_utils import parse_raw_proxy
 
@@ -297,7 +298,7 @@ def run_calibrate(target_id: str, profile_dir: str, url: str, proxy: str) -> int
             with sync_playwright() as playwright:
                 context = None
                 try:
-                    context, _page, used_direct_fallback = _open_calibration_browser(
+                    context, page, used_direct_fallback = _open_calibration_browser(
                         playwright,
                         profile_path=profile_path,
                         viewport=config.get("viewport") or {"width": 1200, "height": 900},
@@ -314,8 +315,7 @@ def run_calibrate(target_id: str, profile_dir: str, url: str, proxy: str) -> int
                     if used_direct_fallback:
                         print("当前校准浏览器使用直连；这不会修改账号运行表中的代理。", flush=True)
                     try:
-                        while context.pages:
-                            time.sleep(0.5)
+                        wait_for_calibration_close(context, page)
                     except KeyboardInterrupt:
                         pass
                 finally:
