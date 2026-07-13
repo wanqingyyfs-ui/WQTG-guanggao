@@ -28,13 +28,12 @@ class TgapipldcLocatorService:
         self.config_path = self.workspace.data_dir / self.CONFIG_FILE_NAME
         self._install_profile_behavior_manager_if_available()
 
-    def _install_profile_behavior_manager_if_available(self) -> None:
-        """Attach behavior management to the already-created profile page.
+    def _behavior_service(self):
+        from app.services.tgapipldc_behavior_service import TgapipldcBehaviorService
 
-        The locator service is constructed immediately after the profile page is
-        added to the main window. Looking up the page through QApplication keeps
-        this integration isolated and leaves non-GUI/CLI usage unchanged.
-        """
+        return TgapipldcBehaviorService(self.workspace)
+
+    def _install_profile_behavior_manager_if_available(self) -> None:
         profile_page = None
         try:
             from PySide6.QtWidgets import QApplication
@@ -61,19 +60,39 @@ class TgapipldcLocatorService:
 
             profile_page.get_profile_maintenance_config = get_merged_config
 
-            from app.gui.tgapipldc_behavior_manager import install_profile_behavior_manager
+            from app.gui.tgapipldc_behavior_manager_v2 import (
+                install_profile_behavior_manager_v2,
+            )
             from app.gui import tgapipldc_panel_bootstrap as panel_bootstrap
 
             window = profile_page.window()
             run_callback = None
+            locator_callback = None
             if window is not None and hasattr(window, "runtime_service"):
                 run_callback = lambda action, config: panel_bootstrap._run_profile_maintenance(
                     window, action, config
                 )
-            install_profile_behavior_manager(
+
+                def open_locator_target(target_id: str) -> None:
+                    panel_bootstrap._reload_locator_config(window, silent=True)
+                    locator_page = getattr(window, "tgapipldc_locator_page", None)
+                    if locator_page is None:
+                        raise RuntimeError("自动化定位设置页面尚未创建")
+                    index = locator_page.target_combo.findData(target_id)
+                    if index < 0:
+                        raise RuntimeError(f"自动化定位设置中未找到步骤目标：{target_id}")
+                    if hasattr(window, "tabs"):
+                        window.tabs.setCurrentWidget(locator_page)
+                    locator_page.target_combo.setCurrentIndex(index)
+                    locator_page.append_log(f"已从行为步骤跳转到定位目标：{target_id}")
+
+                locator_callback = open_locator_target
+
+            install_profile_behavior_manager_v2(
                 profile_page,
                 self.workspace,
                 run_callback=run_callback,
+                locator_callback=locator_callback,
                 parent=window or profile_page,
             )
         except Exception as exc:
@@ -92,6 +111,10 @@ class TgapipldcLocatorService:
         return LocatorConfigStore(self.config_path)
 
     def load_config(self) -> dict[str, Any]:
+        try:
+            self._behavior_service().load_config()
+        except Exception:
+            pass
         return self._store().load()
 
     def load_targets(self) -> dict[str, dict[str, Any]]:
@@ -119,7 +142,12 @@ class TgapipldcLocatorService:
         return self._store().save_target(target_id, target)
 
     def reset_target(self, target_id: str) -> dict[str, Any]:
-        return self._store().reset_target(target_id)
+        try:
+            return self._store().reset_target(target_id)
+        except KeyError:
+            if self._behavior_service().reset_managed_locator_target(target_id):
+                return self.load_config()
+            raise
 
     def list_profiles(self) -> list[LocatorProfileItem]:
         result: dict[str, LocatorProfileItem] = {}
@@ -147,13 +175,7 @@ class TgapipldcLocatorService:
         return sorted(result.values(), key=lambda item: item.display_name.casefold())
 
     def proxy_for_profile(self, profile_dir: str) -> str:
-        """Return a proxy only when calibration proxy mode is explicitly enabled.
-
-        Locator calibration is a visual maintenance tool. It defaults to direct
-        networking so an expired rotating proxy cannot block element picking.
-        API export and profile maintenance use their own strict proxy path and
-        are not affected by this setting.
-        """
+        """Return a proxy only when calibration proxy mode is explicitly enabled."""
         enabled = os.environ.get("WQTG_CALIBRATION_USE_PROXY", "").strip().lower()
         if enabled not in {"1", "true", "yes", "on"}:
             return ""
