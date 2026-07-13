@@ -236,7 +236,7 @@ class ProfileBehaviorManagerDialog(QDialog):
         steps[old], steps[new] = steps[new], steps[old]
         self._refresh_steps(new)
 
-    def _apply_json(self) -> None:
+    def _apply_json(self) -> bool:
         try:
             value = json.loads(self.json_edit.toPlainText() or "{}")
             if not isinstance(value, dict):
@@ -244,14 +244,14 @@ class ProfileBehaviorManagerDialog(QDialog):
             if self.editing == "step":
                 current = self._step()
                 if current is None:
-                    return
+                    return False
                 current.clear()
                 current.update(value)
                 self._refresh_steps(self.step_index)
             else:
                 current = self._behavior()
                 if current is None:
-                    return
+                    return False
                 was_builtin = bool(current.get("builtin"))
                 if was_builtin and value.get("id") != current.get("id"):
                     raise ValueError("内置行为不能修改 ID")
@@ -260,8 +260,10 @@ class ProfileBehaviorManagerDialog(QDialog):
                 if was_builtin:
                     current["builtin"] = True
                 self._refresh_behaviors(self.behavior_index)
+            return True
         except Exception as exc:
             QMessageBox.critical(self, "应用失败", str(exc))
+            return False
 
     def _validated(self) -> None:
         ids = set()
@@ -287,7 +289,8 @@ class ProfileBehaviorManagerDialog(QDialog):
 
     def _save(self):
         try:
-            self._apply_json()
+            if not self._apply_json():
+                return None
             self._validated()
             saved = self.service.save_behaviors(self.behaviors, self.base_config_provider())
             self.behaviors = deepcopy(saved.get("profile_behaviors") or [])
