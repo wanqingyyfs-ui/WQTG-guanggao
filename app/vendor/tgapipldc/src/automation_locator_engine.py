@@ -10,10 +10,12 @@ from automation_atomic_io import atomic_write_text
 def _target(category, description, *strategies, timeout=10000):
     return {"category": category, "description": description, "timeout_ms": timeout, "strategies": list(strategies)}
 
+
 def _role(role, regex): return {"type":"role","role":role,"name_regex":regex,"enabled":True}
 def _css(value): return {"type":"css","value":value,"enabled":True}
 def _text(regex): return {"type":"text","value_regex":regex,"enabled":True}
 def _xy(x,y): return {"type":"relative_coordinate","x_ratio":x,"y_ratio":y,"enabled":False}
+
 
 DEFAULT_CONFIG = {
  "schema_version":1,
@@ -33,6 +35,7 @@ DEFAULT_CONFIG = {
   "mytelegram.app.create":_target("my.telegram.org","创建应用按钮",_role("button","create application|create app|save|创建|保存"),_css("button.btn-primary,input[type='submit']"),_xy(.5,.86),timeout=12000),
  }
 }
+
 
 class LocatorConfigStore:
     def __init__(self, path): self.config_path=Path(path).expanduser().resolve()
@@ -73,6 +76,7 @@ class LocatorConfigStore:
         out=deepcopy(a)
         for k,v in b.items(): out[k]=LocatorConfigStore._merge(out[k],v) if isinstance(v,dict) and isinstance(out.get(k),dict) else deepcopy(v)
         return out
+
 
 class LocatorEngine:
     def __init__(self,config_path,diagnostics_dir,log_func:Callable[[str],None]|None=None):
@@ -131,6 +135,7 @@ class LocatorEngine:
             except Exception: pass
         return None
 
+
 def build_selector_for_element(p):
     if str(p.get("id") or "").strip(): return "#"+_esc(str(p["id"]))
     tag=str(p.get("tag") or "*").lower(); attrs=p.get("attrs") if isinstance(p.get("attrs"),dict) else {}
@@ -140,7 +145,25 @@ def build_selector_for_element(p):
     c=[x for x in str(p.get("className") or "").split() if x and not x.startswith("is-")]
     return tag+"".join("."+_esc(x) for x in c[:4]) if c else tag
 
+
 def calibration_init_script(target_id):
-    tid=json.dumps(str(target_id))
-    return """(()=>{if(window.__wqtgLocatorInstalled)return;window.__wqtgLocatorInstalled=true;document.addEventListener('click',async e=>{if(!(e.ctrlKey&&e.shiftKey))return;e.preventDefault();e.stopPropagation();const el=e.target instanceof Element?e.target.closest('button,a,input,[role],div'):null;if(!el)return;const r=el.getBoundingClientRect(),attrs={};for(const n of ['aria-label','title','name','data-testid','placeholder','role']){const v=el.getAttribute(n);if(v)attrs[n]=v}const p={targetId:TID,tag:el.tagName.toLowerCase(),id:el.id||'',className:typeof el.className==='string'?el.className:'',text:(el.innerText||el.textContent||'').trim().slice(0,200),attrs,xRatio:(r.left+r.width/2)/Math.max(1,innerWidth),yRatio:(r.top+r.height/2)/Math.max(1,innerHeight),url:location.href};try{await window.wqtgSaveLocator(p)}catch(x){console.error(x)}el.style.outline='3px solid #ff3366'},true)})()""".replace("TID",tid)
+    target_json=json.dumps(str(target_id))
+    script=r"""
+(()=>{
+ if(window.__wqtgLocatorInstalled)return;window.__wqtgLocatorInstalled=true;
+ const TARGET_ID=__TARGET_ID__,ACTIONABLE="button,a,input,label,[role='button'],[role='menuitem'],[role='link'],[tabindex]";
+ let armed=false,saving=false,lastCaptureAt=0,banner=null;
+ const ensureBanner=()=>{if(banner&&banner.isConnected)return banner;if(!document.documentElement)return null;banner=document.createElement('div');banner.id='__wqtg_locator_banner';Object.assign(banner.style,{position:'fixed',top:'12px',left:'50%',transform:'translateX(-50%)',zIndex:'2147483647',padding:'9px 14px',borderRadius:'8px',background:'rgba(20,20,24,.92)',color:'#fff',font:'13px/1.4 sans-serif',boxShadow:'0 4px 18px rgba(0,0,0,.35)',pointerEvents:'none'});document.documentElement.appendChild(banner);return banner};
+ const showStatus=(message,success=false)=>{const node=ensureBanner();if(!node)return;node.textContent=message;node.style.background=success?'rgba(22,125,74,.95)':'rgba(20,20,24,.92)'};
+ const showReady=()=>showStatus(armed?'WQTG 拾取已开启：直接点击目标按钮；Esc 取消':'WQTG 校准：按 F8 后直接点击目标，或按住 Ctrl+Shift 点击目标');
+ const elementFromEvent=event=>{const path=typeof event.composedPath==='function'?event.composedPath():[];for(const node of path){if(node instanceof Element&&node.matches(ACTIONABLE))return node}const raw=event.target instanceof Element?event.target:null;return raw?raw.closest(ACTIONABLE):null};
+ const capture=async event=>{const requested=armed||(event.ctrlKey&&event.shiftKey);if(!requested)return;event.preventDefault();event.stopPropagation();if(typeof event.stopImmediatePropagation==='function')event.stopImmediatePropagation();const now=Date.now();if(saving||now-lastCaptureAt<500)return;const el=elementFromEvent(event);if(!el){showStatus('没有识别到可点击元素，请点击按钮本体或按 Esc 后重试');return}saving=true;lastCaptureAt=now;const r=el.getBoundingClientRect(),attrs={};for(const n of ['aria-label','title','name','data-testid','placeholder','role']){const v=el.getAttribute(n);if(v)attrs[n]=v}const p={targetId:TARGET_ID,tag:el.tagName.toLowerCase(),id:el.id||'',className:typeof el.className==='string'?el.className:'',text:(el.innerText||el.textContent||'').trim().slice(0,200),attrs,xRatio:(r.left+r.width/2)/Math.max(1,innerWidth),yRatio:(r.top+r.height/2)/Math.max(1,innerHeight),url:location.href};try{if(typeof window.wqtgSaveLocator!=='function')throw new Error('wqtgSaveLocator bridge is not available');await window.wqtgSaveLocator(p);el.style.setProperty('outline','3px solid #ff3366','important');armed=false;showStatus('定位目标已保存，可以关闭浏览器',true)}catch(error){console.error('[WQTG locator]',error);showStatus(`保存失败：${String(error)}`)}finally{saving=false}};
+ window.addEventListener('keydown',event=>{if(event.key==='F8'){event.preventDefault();event.stopPropagation();armed=!armed;showReady()}else if(event.key==='Escape'&&armed){event.preventDefault();armed=false;showReady()}},true);
+ for(const eventName of ['pointerdown','mousedown','click'])window.addEventListener(eventName,capture,{capture:true,passive:false});
+ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',showReady,{once:true});else showReady();
+})()
+"""
+    return script.replace("__TARGET_ID__",target_json)
+
+
 def _esc(v): return re.sub(r"([^A-Za-z0-9_-])",lambda m:"\\"+m.group(1),v)
