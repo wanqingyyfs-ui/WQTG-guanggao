@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -31,6 +32,7 @@ class TgapipldcLocatorService:
         if src not in sys.path:
             sys.path.insert(0, src)
         from automation_locator_engine import LocatorConfigStore
+
         return LocatorConfigStore(self.config_path)
 
     def load_config(self) -> dict[str, Any]:
@@ -43,7 +45,9 @@ class TgapipldcLocatorService:
         try:
             target = json.loads(str(raw_text or "{}"))
         except json.JSONDecodeError as exc:
-            raise ValueError(f"目标配置不是有效 JSON：第 {exc.lineno} 行第 {exc.colno} 列，{exc.msg}") from exc
+            raise ValueError(
+                f"目标配置不是有效 JSON：第 {exc.lineno} 行第 {exc.colno} 列，{exc.msg}"
+            ) from exc
         if not isinstance(target, dict):
             raise ValueError("目标配置必须是 JSON 对象")
         config = self.load_config()
@@ -87,8 +91,23 @@ class TgapipldcLocatorService:
         return sorted(result.values(), key=lambda item: item.display_name.casefold())
 
     def proxy_for_profile(self, profile_dir: str) -> str:
+        """Return a proxy only when calibration proxy mode is explicitly enabled.
+
+        Locator calibration is a visual maintenance tool. It defaults to direct
+        networking so an expired rotating proxy cannot block element picking.
+        API export and profile maintenance use their own strict proxy path and
+        are not affected by this setting.
+        """
+        enabled = os.environ.get("WQTG_CALIBRATION_USE_PROXY", "").strip().lower()
+        if enabled not in {"1", "true", "yes", "on"}:
+            return ""
+
         normalized = str(profile_dir or "").replace("\\", "/")
         for item in self.list_profiles():
             if item.profile_dir.replace("\\", "/") == normalized:
                 return item.raw_proxy
         return ""
+
+    def open_directory(self) -> Path:
+        self.config_path.parent.mkdir(parents=True, exist_ok=True)
+        return self.config_path.parent
