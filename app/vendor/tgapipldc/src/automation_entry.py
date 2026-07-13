@@ -9,7 +9,8 @@ from pathlib import Path
 from typing import Any
 
 from automation_adapter import install_login_adapter, install_profile_adapter
-from automation_locator_engine import LocatorConfigStore, build_selector_for_element, calibration_init_script
+from automation_calibration_picker import CalibrationPickerInstaller
+from automation_locator_engine import LocatorConfigStore, build_selector_for_element
 from profile_lock import ProfileLock
 from proxy_utils import parse_raw_proxy
 
@@ -153,9 +154,21 @@ def _is_proxy_auth_error(exc: BaseException | str) -> bool:
     ))
 
 
-def _configure_calibration_context(context, target_id: str, save_locator) -> None:
-    context.expose_function("wqtgSaveLocator", save_locator)
-    context.add_init_script(calibration_init_script(target_id))
+def _is_proxy_navigation_error(exc: BaseException | str) -> bool:
+    text = str(exc or "").lower()
+    return _is_proxy_auth_error(text) or any(marker in text for marker in (
+        "err_tunnel_connection_failed",
+        "err_proxy_connection_failed",
+        "err_socks_connection_failed",
+        "proxy connection failed",
+        "proxy connect aborted",
+    ))
+
+
+def _configure_calibration_context(context, target_id: str, save_locator) -> CalibrationPickerInstaller:
+    installer = CalibrationPickerInstaller(target_id, save_locator)
+    installer.configure_context(context)
+    return installer
 
 
 def _open_calibration_browser(
@@ -168,7 +181,7 @@ def _open_calibration_browser(
     raw_proxy: str,
     save_locator,
 ):
-    """Open calibration browser and retry direct only for proxy-auth failures.
+    """Open calibration browser and retry direct for proxy-layer failures.
 
     API export and profile maintenance remain proxy-strict. The direct retry is
     intentionally limited to the visual locator calibration tool.
@@ -197,7 +210,7 @@ def _open_calibration_browser(
         attempts.append(("proxy", parsed_proxy.playwright_proxy))
     attempts.append(("direct", None))
 
-    first_auth_error = proxy_problem
+    first_proxy_error = proxy_problem
     for mode, proxy_settings in attempts:
         launch_kwargs = dict(base_kwargs)
         if proxy_settings:
@@ -205,24 +218,33 @@ def _open_calibration_browser(
         context = playwright.chromium.launch_persistent_context(**launch_kwargs)
         attempt_succeeded = False
         try:
-            _configure_calibration_context(context, target_id, save_locator)
+            installer = _configure_calibration_context(context, target_id, save_locator)
             page = context.pages[0] if context.pages else context.new_page()
             try:
                 page.goto(target_url, wait_until="commit", timeout=20000)
+                if hasattr(page, "wait_for_load_state"):
+                    try:
+                        page.wait_for_load_state("domcontentloaded", timeout=15000)
+                    except Exception:
+                        pass
+                if not installer.ensure_page(page):
+                    raise RuntimeError(
+                        "定位拾取器未能注入当前页面。请确认页面不是浏览器错误页后重试。"
+                    )
             except BaseException as exc:
-                if mode == "proxy" and parsed_proxy and _is_proxy_auth_error(exc):
-                    first_auth_error = str(exc)
+                if mode == "proxy" and parsed_proxy and _is_proxy_navigation_error(exc):
+                    first_proxy_error = str(exc)
                     print(
-                        "校准代理认证失败（ERR_INVALID_AUTH_CREDENTIALS）。"
-                        "将仅为定位校准自动改用直连重试一次；API 批量和资料维护仍严格使用代理。",
+                        "校准代理连接失败，将仅为定位校准自动改用直连重试一次；"
+                        "API 批量和资料维护仍严格使用代理。",
                         flush=True,
                     )
                     continue
-                if mode == "direct" and first_auth_error:
+                if mode == "direct" and first_proxy_error:
                     raise RuntimeError(
-                        "代理账号或密码无效，且校准浏览器直连重试也失败。"
-                        "请在 API 批量工作台重新保存完整动态代理并生成运行表。"
-                        f"代理错误：{first_auth_error}；直连错误：{exc}"
+                        "代理不可用，且校准浏览器直连重试也失败。"
+                        "请检查本机网络，或在 API 批量工作台重新保存有效代理。"
+                        f"代理错误：{first_proxy_error}；直连错误：{exc}"
                     ) from exc
                 raise
             attempt_succeeded = True
@@ -284,7 +306,11 @@ def run_calibrate(target_id: str, profile_dir: str, url: str, proxy: str) -> int
                         raw_proxy=proxy,
                         save_locator=save_locator,
                     )
-                    print("校准浏览器已打开。按住 Ctrl + Shift 点击目标元素；保存后关闭浏览器。", flush=True)
+                    print(
+                        "校准浏览器已打开。先确认顶部出现 WQTG 校准条，"
+                        "点击“开始拾取”后再点击目标按钮；也可按 F8 或 Ctrl+Shift 点击。",
+                        flush=True,
+                    )
                     if used_direct_fallback:
                         print("当前校准浏览器使用直连；这不会修改账号运行表中的代理。", flush=True)
                     try:
