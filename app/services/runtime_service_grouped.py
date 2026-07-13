@@ -11,24 +11,38 @@ from app.services.tgapipldc_account_bind_service import TgapipldcAccountBindServ
 from app.services.tgapipldc_import_service import TgapipldcImportService
 from app.services.tgapipldc_locator_service import TgapipldcLocatorService
 from app.services.tgapipldc_proxy_service import TgapipldcProxyService
-from app.services.tgapipldc_runner_service import TgapipldcRunnerService
+from app.services.tgapipldc_runner_service_cancel_safe import (
+    CancelSafeTgapipldcRunnerService,
+)
 from app.services.tgapipldc_safe_workspace_service import SafeTgapipldcWorkspaceService
 from app.services.yanzheng_login_provider import YanzhengLoginInputProvider
 
 
 class RuntimeService(BaseRuntimeService):
-    """Grouped runtime with explicit safe services and unified cancellable automation jobs."""
+    """Grouped runtime with explicit safe services and cancellable automation jobs."""
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        safe_workspace = SafeTgapipldcWorkspaceService(self.tgapipldc_workspace_service.workspace_dir)
+        safe_workspace = SafeTgapipldcWorkspaceService(
+            self.tgapipldc_workspace_service.workspace_dir
+        )
         safe_workspace.ensure_structure()
         self.tgapipldc_workspace_service = safe_workspace
-        self.tgapipldc_proxy_service = TgapipldcProxyService(workspace_service=safe_workspace)
-        self.tgapipldc_account_bind_service = TgapipldcAccountBindService(workspace_service=safe_workspace)
-        self.tgapipldc_runner_service = TgapipldcRunnerService(workspace_service=safe_workspace)
-        self.tgapipldc_import_service = TgapipldcImportService(workspace_service=safe_workspace)
-        self.tgapipldc_locator_service = TgapipldcLocatorService(workspace_service=safe_workspace)
+        self.tgapipldc_proxy_service = TgapipldcProxyService(
+            workspace_service=safe_workspace
+        )
+        self.tgapipldc_account_bind_service = TgapipldcAccountBindService(
+            workspace_service=safe_workspace
+        )
+        self.tgapipldc_runner_service = CancelSafeTgapipldcRunnerService(
+            workspace_service=safe_workspace
+        )
+        self.tgapipldc_import_service = TgapipldcImportService(
+            workspace_service=safe_workspace
+        )
+        self.tgapipldc_locator_service = TgapipldcLocatorService(
+            workspace_service=safe_workspace
+        )
         self._wqtg_login_future: concurrent.futures.Future | None = None
         self._wqtg_login_lock = threading.RLock()
 
@@ -88,7 +102,9 @@ class RuntimeService(BaseRuntimeService):
                     for task in pending:
                         task.cancel()
                     if pending:
-                        loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+                        loop.run_until_complete(
+                            asyncio.gather(*pending, return_exceptions=True)
+                        )
                 except Exception as exc:
                     self._emit_log("error", f"清理后台异步任务失败: {exc}")
                 finally:
@@ -115,7 +131,9 @@ class RuntimeService(BaseRuntimeService):
             log_func=self._emit_tgapipldc_log,
         )
         manager = self._get_manager()
-        future = self._submit_coroutine(self._login_wqtg_accounts_with_yanzheng(manager, provider))
+        future = self._submit_coroutine(
+            self._login_wqtg_accounts_with_yanzheng(manager, provider)
+        )
         with self._wqtg_login_lock:
             self._wqtg_login_future = future
         future.add_done_callback(self._clear_wqtg_login_future)
@@ -129,7 +147,9 @@ class RuntimeService(BaseRuntimeService):
         stopped_process = self.tgapipldc_runner_service.stop_current_process()
         with self._wqtg_login_lock:
             future = self._wqtg_login_future
-        cancelled_login = bool(future is not None and not future.done() and future.cancel())
+        cancelled_login = bool(
+            future is not None and not future.done() and future.cancel()
+        )
         if stopped_process or cancelled_login:
             self._emit_tgapipldc_log("已请求停止当前 tgapipldc 流程及其子任务")
         else:
@@ -137,30 +157,53 @@ class RuntimeService(BaseRuntimeService):
 
     def start_task_scheduler(self, task_id: str) -> None:
         self.reload_config_cache()
-        task = next((item for item in self.tasks if str(getattr(item, "task_id", "") or "") == str(task_id or "")), None)
+        task = next(
+            (
+                item
+                for item in self.tasks
+                if str(getattr(item, "task_id", "") or "") == str(task_id or "")
+            ),
+            None,
+        )
         if task is None:
             raise RuntimeError("任务不存在")
         if not bool(getattr(task, "enabled", True)):
             raise RuntimeError("未启用任务不能启动，请先启用任务")
         scheduler = self._get_scheduler()
-        self._submit_coroutine(self._start_single_task_and_update_status(scheduler, str(task_id or "")))
+        self._submit_coroutine(
+            self._start_single_task_and_update_status(scheduler, str(task_id or ""))
+        )
 
-    async def _start_single_task_and_update_status(self, scheduler: SchedulerService, task_id: str) -> None:
+    async def _start_single_task_and_update_status(
+        self,
+        scheduler: SchedulerService,
+        task_id: str,
+    ) -> None:
         try:
             await scheduler.start_task(task_id)
-            self._emit_scheduler_status("running" if scheduler.is_running() else "stopped")
+            self._emit_scheduler_status(
+                "running" if scheduler.is_running() else "stopped"
+            )
         except Exception:
             self._emit_scheduler_status("error")
             raise
 
     def stop_task_scheduler(self, task_id: str) -> None:
         scheduler = self._get_scheduler()
-        self._submit_coroutine(self._stop_single_task_and_update_status(scheduler, str(task_id or "")))
+        self._submit_coroutine(
+            self._stop_single_task_and_update_status(scheduler, str(task_id or ""))
+        )
 
-    async def _stop_single_task_and_update_status(self, scheduler: SchedulerService, task_id: str) -> None:
+    async def _stop_single_task_and_update_status(
+        self,
+        scheduler: SchedulerService,
+        task_id: str,
+    ) -> None:
         try:
             await scheduler.stop_task(task_id)
-            self._emit_scheduler_status("running" if scheduler.is_running() else "stopped")
+            self._emit_scheduler_status(
+                "running" if scheduler.is_running() else "stopped"
+            )
         except Exception:
             self._emit_scheduler_status("error")
             raise
