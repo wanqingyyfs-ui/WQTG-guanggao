@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import json
 import os
+import signal
 import subprocess
 import sys
 import threading
-from dataclasses import dataclass
+import uuid
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from app.services.tgapipldc_workspace_service import TgapipldcWorkspaceService
 
@@ -20,95 +23,87 @@ class TgapipldcCommandResult:
     script_path: Path
     return_code: int
     success: bool
+    job_id: str = ""
+    job_type: str = ""
+    result_path: Path | None = None
+    details: dict[str, Any] = field(default_factory=dict)
 
 
 class TgapipldcRunnerService:
-    """
-    tgapipldc 脚本运行服务。
-
-    当前只保留动态轮换代理主流程：
-    - 保存 accounts.csv；
-    - 保存 data/proxies.csv 中唯一一条 raw_proxy；
-    - 生成 account_proxy_map.csv 时所有账号共用这一条动态代理；
-    - 登录、打开浏览器、资料维护继续调用原脚本文件名，避免新增 *_dynamic.py 双轨文件。
-
-    旧的“检测代理 -> 构建可用代理池 -> 一账号一代理绑定”流程已从主入口移除。
-    """
+    """Run one tgapipldc job at a time and stop its entire process tree safely."""
 
     SCRIPT_TEST_PROXIES = "test_proxies.py"
     SCRIPT_BUILD_PROXY_POOL = "build_proxy_pool.py"
     SCRIPT_ASSIGN_PROXIES = "assign_proxies.py"
-    SCRIPT_LOGIN_TELEGRAM_WEB = "login_telegram_web.py"
+    SCRIPT_AUTOMATION_ENTRY = "automation_entry.py"
     SCRIPT_OPEN_ACCOUNT_BROWSER = "open_account_browser.py"
-    SCRIPT_UPDATE_TELEGRAM_PROFILE = "update_telegram_profile.py"
 
     def __init__(self, workspace_service: TgapipldcWorkspaceService | None = None):
         self.workspace = workspace_service or TgapipldcWorkspaceService()
         self.workspace.ensure_structure()
-
         self._process: subprocess.Popen[str] | None = None
-        self._lock = threading.Lock()
+        self._current_job: dict[str, Any] | None = None
+        self._lock = threading.RLock()
 
     def is_running(self) -> bool:
         with self._lock:
             process = self._process
             return bool(process is not None and process.poll() is None)
 
-    def stop_current_process(self) -> None:
+    def current_job(self) -> dict[str, Any]:
+        with self._lock:
+            return dict(self._current_job or {})
+
+    def stop_current_process(self) -> bool:
         with self._lock:
             process = self._process
-
-        if process is None:
-            return
-
-        if process.poll() is not None:
-            return
-
-        try:
-            process.terminate()
-            process.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            try:
-                process.kill()
-            except Exception:
-                pass
+        if process is None or process.poll() is not None:
+            return False
+        self._terminate_process_tree(process)
+        return True
 
     def run_test_proxies(self, log_callback: LogCallback | None = None) -> TgapipldcCommandResult:
-        self._emit(log_callback, "动态轮换代理模式不再使用旧的代理池检测入口，请直接保存动态代理并生成运行表。")
+        self._emit(log_callback, "动态轮换代理模式不再使用旧代理池检测入口。")
         return TgapipldcCommandResult(
             command_name="旧代理池检测已移除",
             script_path=self.workspace.src_dir / self.SCRIPT_TEST_PROXIES,
             return_code=0,
             success=True,
+            job_type="legacy-proxy-test",
         )
 
     def run_build_proxy_pool(self, log_callback: LogCallback | None = None) -> TgapipldcCommandResult:
-        self._emit(log_callback, "动态轮换代理模式不再构建可用代理池，请直接保存动态代理并生成运行表。")
+        self._emit(log_callback, "动态轮换代理模式不再构建可用代理池。")
         return TgapipldcCommandResult(
             command_name="旧构建代理池已移除",
             script_path=self.workspace.src_dir / self.SCRIPT_BUILD_PROXY_POOL,
             return_code=0,
             success=True,
+            job_type="legacy-proxy-pool",
         )
 
     def run_assign_proxies(self, log_callback: LogCallback | None = None) -> TgapipldcCommandResult:
         return self.run_script(
             script_name=self.SCRIPT_ASSIGN_PROXIES,
             command_name="生成动态代理账号运行表",
+            job_type="assign-proxies",
             log_callback=log_callback,
         )
 
     def run_login_telegram_web(self, log_callback: LogCallback | None = None) -> TgapipldcCommandResult:
         return self.run_script(
-            script_name=self.SCRIPT_LOGIN_TELEGRAM_WEB,
+            script_name=self.SCRIPT_AUTOMATION_ENTRY,
             command_name="批量获取 api_id/api_hash",
+            job_type="api-export",
             log_callback=log_callback,
+            extra_args=["--mode", "login"],
         )
 
     def run_open_account_browser(self, log_callback: LogCallback | None = None) -> TgapipldcCommandResult:
         return self.run_script(
             script_name=self.SCRIPT_OPEN_ACCOUNT_BROWSER,
             command_name="打开账号浏览器",
+            job_type="open-browser",
             log_callback=log_callback,
         )
 
@@ -119,10 +114,39 @@ class TgapipldcRunnerService:
     ) -> TgapipldcCommandResult:
         safe_action = str(action or "status").strip().lower() or "status"
         return self.run_script(
-            script_name=self.SCRIPT_UPDATE_TELEGRAM_PROFILE,
+            script_name=self.SCRIPT_AUTOMATION_ENTRY,
             command_name=f"账号资料维护-{safe_action}",
+            job_type="profile-maintenance",
             log_callback=log_callback,
-            extra_args=["--action", safe_action],
+            extra_args=["--mode", "profile", "--action", safe_action],
+        )
+
+    def run_locator_calibration(
+        self,
+        target_id: str,
+        profile_dir: str,
+        url: str,
+        raw_proxy: str = "",
+        log_callback: LogCallback | None = None,
+    ) -> TgapipldcCommandResult:
+        args = [
+            "--mode",
+            "calibrate",
+            "--target",
+            str(target_id),
+            "--profile-dir",
+            str(profile_dir),
+            "--url",
+            str(url or "https://web.telegram.org/k/"),
+        ]
+        if str(raw_proxy or "").strip():
+            args.extend(["--proxy", str(raw_proxy)])
+        return self.run_script(
+            script_name=self.SCRIPT_AUTOMATION_ENTRY,
+            command_name=f"定位校准-{target_id}",
+            job_type="locator-calibration",
+            log_callback=log_callback,
+            extra_args=args,
         )
 
     def run_script(
@@ -131,104 +155,183 @@ class TgapipldcRunnerService:
         command_name: str,
         log_callback: LogCallback | None = None,
         extra_args: list[str] | None = None,
+        job_type: str = "script",
     ) -> TgapipldcCommandResult:
         script_path = self._require_script(script_name)
+        job_id = uuid.uuid4().hex[:12]
+        result_dir = self.workspace.logs_dir / "job_results"
+        result_dir.mkdir(parents=True, exist_ok=True)
+        result_path = result_dir / f"{job_id}.json"
 
         with self._lock:
             if self._process is not None and self._process.poll() is None:
-                raise RuntimeError("已有 tgapipldc 脚本正在运行，请先停止或等待完成")
+                active = dict(self._current_job or {})
+                raise RuntimeError(
+                    "已有 tgapipldc 流程正在运行，请先停止或等待完成"
+                    + (f"：{active.get('command_name')} ({active.get('job_id')})" if active else "")
+                )
 
-        command = [
-            sys.executable,
-            "-u",
-            str(script_path),
-            *(extra_args or []),
-        ]
+        job_lock = self._acquire_global_job_lock(job_id)
+        command = [sys.executable, "-u", str(script_path), *(extra_args or [])]
+        env = self._build_subprocess_env(job_id=job_id, result_path=result_path)
+        self._emit(log_callback, f"[{job_type}][{job_id}] 开始运行：{script_path}")
+        self._emit(log_callback, f"[{job_type}][{job_id}] Python：{sys.executable}")
 
-        self._emit(log_callback, f"[{command_name}] 开始运行：{script_path}")
-        self._emit(log_callback, f"[{command_name}] Python：{sys.executable}")
+        popen_kwargs: dict[str, Any] = {
+            "cwd": str(self.workspace.workspace_dir),
+            "env": env,
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.STDOUT,
+            "stdin": subprocess.DEVNULL,
+            "text": True,
+            "encoding": "utf-8",
+            "errors": "replace",
+            "bufsize": 1,
+        }
+        if os.name == "nt":
+            popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        else:
+            popen_kwargs["start_new_session"] = True
 
-        env = self._build_subprocess_env()
-
-        process = subprocess.Popen(
-            command,
-            cwd=str(self.workspace.workspace_dir),
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            stdin=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            bufsize=1,
-        )
-
+        try:
+            process = subprocess.Popen(command, **popen_kwargs)
+        except Exception:
+            job_lock.release()
+            raise
         with self._lock:
             self._process = process
+            self._current_job = {
+                "job_id": job_id,
+                "job_type": job_type,
+                "command_name": command_name,
+                "script_path": str(script_path),
+                "result_path": str(result_path),
+            }
 
         try:
             if process.stdout is not None:
                 for line in process.stdout:
                     self._emit(log_callback, line.rstrip("\n"))
-
             return_code = process.wait()
-            success = return_code == 0
-
+            details = self._read_result(result_path)
+            success = return_code == 0 and str(details.get("status") or "success") == "success"
             if success:
-                self._emit(log_callback, f"[{command_name}] 运行完成")
+                self._emit(log_callback, f"[{job_type}][{job_id}] 运行完成")
             else:
-                self._emit(log_callback, f"[{command_name}] 运行失败，退出码：{return_code}")
-
+                status = str(details.get("status") or "failed")
+                self._emit(
+                    log_callback,
+                    f"[{job_type}][{job_id}] 运行未完全成功：状态={status}，退出码={return_code}",
+                )
             return TgapipldcCommandResult(
                 command_name=command_name,
                 script_path=script_path,
                 return_code=return_code,
                 success=success,
+                job_id=job_id,
+                job_type=job_type,
+                result_path=result_path,
+                details=details,
             )
         finally:
             with self._lock:
                 if self._process is process:
                     self._process = None
+                    self._current_job = None
+            job_lock.release()
+
+    def _acquire_global_job_lock(self, job_id: str):
+        src_text = str(self.workspace.src_dir)
+        if src_text not in sys.path:
+            sys.path.insert(0, src_text)
+        from profile_lock import ProfileLock
+
+        lock = ProfileLock(
+            self.workspace.workspace_dir,
+            self.workspace.data_dir / "job_locks",
+            timeout_seconds=0,
+            job_id=job_id,
+        )
+        try:
+            return lock.acquire()
+        except Exception as exc:
+            raise RuntimeError(f"另一个 WQTG 实例正在运行 tgapipldc 自动化任务：{exc}") from exc
 
     def _require_script(self, script_name: str) -> Path:
         safe_script_name = str(script_name or "").strip()
-
         if not safe_script_name:
             raise ValueError("脚本名称不能为空")
-
         if "/" in safe_script_name or "\\" in safe_script_name:
             raise ValueError(f"脚本名称不能包含路径分隔符：{safe_script_name}")
-
         script_path = self.workspace.src_dir / safe_script_name
-
-        if not script_path.exists():
+        if not script_path.exists() or not script_path.is_file():
             raise FileNotFoundError(f"找不到 tgapipldc 脚本：{script_path}")
-
-        if not script_path.is_file():
-            raise FileNotFoundError(f"tgapipldc 脚本不是文件：{script_path}")
-
         return script_path
 
-    def _build_subprocess_env(self) -> dict[str, str]:
+    def _build_subprocess_env(self, *, job_id: str, result_path: Path) -> dict[str, str]:
         env = dict(os.environ)
-
         src_dir = str(self.workspace.src_dir)
         old_pythonpath = env.get("PYTHONPATH", "")
-
-        if old_pythonpath:
-            env["PYTHONPATH"] = src_dir + os.pathsep + old_pythonpath
-        else:
-            env["PYTHONPATH"] = src_dir
-
+        env["PYTHONPATH"] = src_dir + (os.pathsep + old_pythonpath if old_pythonpath else "")
         env["PYTHONIOENCODING"] = "utf-8"
         env["PYTHONUNBUFFERED"] = "1"
-
+        env["WQTG_JOB_ID"] = job_id
+        env["WQTG_PARENT_JOB_LOCKED"] = "1"
+        env["WQTG_JOB_RESULT"] = str(result_path)
+        env["WQTG_LOCATOR_CONFIG"] = str(self.workspace.data_dir / "automation_locators.json")
+        env["WQTG_LOCATOR_DIAGNOSTICS"] = str(self.workspace.logs_dir / "automation_failures")
         return env
+
+    @staticmethod
+    def _read_result(result_path: Path) -> dict[str, Any]:
+        if not result_path.exists():
+            return {}
+        try:
+            data = json.loads(result_path.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+
+    @staticmethod
+    def _terminate_process_tree(process: subprocess.Popen[str]) -> None:
+        if process.poll() is not None:
+            return
+        if os.name == "nt":
+            try:
+                subprocess.run(
+                    ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=15,
+                )
+            except Exception:
+                try:
+                    process.kill()
+                except Exception:
+                    pass
+        else:
+            try:
+                os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+                except Exception:
+                    pass
+            except Exception:
+                try:
+                    process.terminate()
+                    process.wait(timeout=5)
+                except Exception:
+                    try:
+                        process.kill()
+                    except Exception:
+                        pass
 
     @staticmethod
     def _emit(log_callback: LogCallback | None, message: str) -> None:
         safe_message = str(message or "")
-
         if callable(log_callback):
             log_callback(safe_message)
         else:
