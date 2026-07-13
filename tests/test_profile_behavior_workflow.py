@@ -11,7 +11,10 @@ SRC = ROOT / "app" / "vendor" / "tgapipldc" / "src"
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(SRC))
 
+import profile_behavior_locator_bridge as bridge
 import profile_behavior_workflow as workflow
+
+bridge.ensure_locator_click_support()
 
 
 class FakeModule:
@@ -45,14 +48,35 @@ class FakeModule:
 
 
 class WorkflowConfigTests(unittest.TestCase):
-    def test_photo_has_crop_then_second_profile_save(self):
+    def test_photo_is_split_into_numbered_atomic_steps(self):
         photo = workflow.behavior_map({})["photo"]
-        kinds = [item["type"] for item in photo["steps"]]
-        self.assertEqual(kinds, [
-            "photo.select_upload", "photo.crop_confirm",
-            "profile.save", "photo.wait_settled",
-        ])
-        self.assertLess(kinds.index("photo.crop_confirm"), kinds.index("profile.save"))
+        self.assertEqual(
+            [item["id"] for item in photo["steps"]],
+            [
+                "step01_prepare_photo",
+                "step02_open_main_menu",
+                "step03_open_settings",
+                "step04_open_profile_edit",
+                "step05_upload_photo",
+                "step06_confirm_crop",
+                "step07_save_profile",
+                "step08_verify_photo",
+            ],
+        )
+        self.assertEqual(photo["steps"][4]["type"], "locator.upload")
+        self.assertEqual(photo["steps"][5]["type"], "locator.click")
+        self.assertEqual(photo["steps"][6]["type"], "locator.click")
+
+    def test_name_username_bio_and_folder_include_config_data_steps(self):
+        behaviors = workflow.behavior_map({})
+        self.assertEqual(behaviors["name"]["steps"][0]["type"], "data.prepare_name")
+        self.assertEqual(behaviors["username"]["steps"][0]["type"], "data.prepare_username")
+        self.assertEqual(behaviors["bio"]["steps"][0]["type"], "data.prepare_bio")
+        self.assertEqual(behaviors["folder"]["steps"][0]["type"], "data.prepare_folder")
+        self.assertIn("locator.fill", {item["type"] for item in behaviors["name"]["steps"]})
+        self.assertIn("locator.fill", {item["type"] for item in behaviors["username"]["steps"]})
+        self.assertIn("locator.fill", {item["type"] for item in behaviors["bio"]["steps"]})
+        self.assertIn("locator.fill", {item["type"] for item in behaviors["folder"]["steps"]})
 
     def test_custom_behaviors_and_steps_keep_order(self):
         config = workflow.normalize_workflow_config({
@@ -72,7 +96,7 @@ class WorkflowConfigTests(unittest.TestCase):
     def test_legacy_flags_control_builtin_enabled_state(self):
         self.assertFalse(workflow.behavior_map({"update_photo": False})["photo"]["enabled"])
 
-    def test_install_replaces_fixed_process_with_generic_workflow(self):
+    def test_install_replaces_fixed_process_with_atomic_workflow(self):
         module = FakeModule()
         module.process_account = lambda *args: {"legacy": True}
         module.action_steps = lambda *args: ["legacy"]
@@ -81,47 +105,9 @@ class WorkflowConfigTests(unittest.TestCase):
         workflow.install_profile_behavior_workflow(module)
         self.assertTrue(module._wqtg_behavior_workflow_installed)
         self.assertTrue(getattr(module.process_account, "_wqtg_behavior_workflow", False))
-        self.assertEqual(module.action_steps("photo", module.normalize_config({}))[:2], [
-            "photo.select_upload", "photo.crop_confirm",
+        self.assertEqual(module.action_steps("name", module.normalize_config({}))[:3], [
+            "data.prepare_name", "locator.click", "locator.click",
         ])
-
-    def test_photo_execution_clicks_crop_then_profile_save(self):
-        calls = []
-        photo = Path(tempfile.mkdtemp()) / "avatar.png"
-        photo.write_bytes(b"png")
-
-        class Page:
-            def wait_for_timeout(self, milliseconds):
-                calls.append(("wait", milliseconds))
-
-        class Engine:
-            def click(self, page, target_id, diagnose_on_failure=False):
-                calls.append(target_id)
-                return True
-
-        module = types.SimpleNamespace(
-            log=lambda message: calls.append(("log", message)),
-            select_photo=lambda config, account_index, used: photo,
-            open_settings=lambda page: calls.append("settings") or True,
-            click_profile_edit_icon_button=lambda page: calls.append("edit") or True,
-            click_profile_avatar_for_upload=lambda page, path: calls.append("upload"),
-            wait_media_editor_closed=lambda page, timeout=30000: calls.append("editor_closed") or True,
-            click_profile_save_button_multi=lambda *args, **kwargs: calls.append("fallback_save") or True,
-            wait_photo_save_ui_settled=lambda page, timeout_ms=15000: calls.append("settled") or True,
-        )
-        old_engine = workflow._locator_engine
-        workflow._locator_engine = lambda _module: Engine()
-        try:
-            state = {
-                "account": {}, "account_index": 1, "used_photos": set(),
-                "photo_path": None, "step_results": [], "domain_statuses": {},
-            }
-            status = workflow._execute_behavior(module, Page(), "photo", state, workflow.normalize_workflow_config({}))
-        finally:
-            workflow._locator_engine = old_engine
-        self.assertEqual(status, "success")
-        self.assertLess(calls.index("telegram.photo.editor_save"), calls.index("telegram.profile.save"))
-        self.assertNotIn("fallback_save", calls)
 
     def test_cycle_reference_is_rejected(self):
         config = workflow.normalize_workflow_config({

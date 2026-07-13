@@ -29,7 +29,7 @@ class TgapipldcLocatorService:
         self._install_profile_behavior_manager_if_available()
 
     def _behavior_service(self):
-        from app.services.tgapipldc_behavior_service import TgapipldcBehaviorService
+        from app.services.tgapipldc_behavior_service_v2 import TgapipldcBehaviorService
 
         return TgapipldcBehaviorService(self.workspace)
 

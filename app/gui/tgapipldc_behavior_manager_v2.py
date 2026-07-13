@@ -6,11 +6,11 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QHBoxLayout, QInputDialog, QMessageBox, QPushButton
 
 from app.gui.tgapipldc_behavior_manager import ProfileBehaviorManagerDialog
-from app.services.tgapipldc_behavior_service import TgapipldcBehaviorService
+from app.services.tgapipldc_behavior_service_v2 import TgapipldcBehaviorService
 
 
 class ProfileBehaviorManagerDialogV2(ProfileBehaviorManagerDialog):
-    """Behavior manager whose custom click steps are first-class locator targets."""
+    """Manage atomic behavior steps and their one-to-one locator targets."""
 
     def __init__(
         self,
@@ -23,14 +23,14 @@ class ProfileBehaviorManagerDialogV2(ProfileBehaviorManagerDialog):
         self.locator_callback = locator_callback
         super().__init__(service, base_config_provider, run_callback, parent)
 
-        self.add_step.setText("新增自定义点击步骤")
+        self.add_step.setText("新增自定义页面步骤")
         try:
             self.add_step.clicked.disconnect()
         except Exception:
             pass
-        self.add_step.clicked.connect(self._add_custom_click_step)
+        self.add_step.clicked.connect(self._add_custom_page_step)
 
-        self.add_system_step_button = QPushButton("新增内置功能步骤")
+        self.add_system_step_button = QPushButton("新增功能/数据步骤")
         self.locate_step_button = QPushButton("去定位当前步骤")
         self.locate_step_button.setObjectName("PrimaryButton")
         for button in (self.add_system_step_button, self.locate_step_button):
@@ -58,8 +58,12 @@ class ProfileBehaviorManagerDialogV2(ProfileBehaviorManagerDialog):
                 str(behavior.get("id") or ""), item
             )
             widget_item = self.step_list.item(row)
-            if widget_item is not None and target_id:
+            if widget_item is None:
+                continue
+            if target_id:
                 widget_item.setText(widget_item.text() + f"  →  {target_id}")
+            else:
+                widget_item.setText(widget_item.text() + "  [功能/数据步骤，无需定位]")
         self._refresh_locator_button()
 
     def _select_step(self, index: int) -> None:
@@ -77,17 +81,17 @@ class ProfileBehaviorManagerDialogV2(ProfileBehaviorManagerDialog):
             self.locate_step_button.setToolTip(
                 f"打开自动化定位设置：{target_id}"
                 if target_id
-                else "当前步骤不需要页面点击定位"
+                else "当前步骤是数据、等待、校验或键盘步骤，不需要页面定位"
             )
 
-    def _add_custom_click_step(self) -> None:
+    def _add_custom_page_step(self) -> None:
         behavior = self._behavior()
         if behavior is None:
             return
         step_id, ok = QInputDialog.getText(
             self,
-            "新增自定义点击步骤",
-            "步骤 ID（例如 click_confirm）",
+            "新增自定义页面步骤",
+            "步骤 ID（例如 step09_click_extra_save）",
         )
         if not ok:
             return
@@ -96,17 +100,54 @@ class ProfileBehaviorManagerDialogV2(ProfileBehaviorManagerDialog):
         if step_id in existing:
             QMessageBox.warning(self, "无法新增", f"步骤 ID 已存在：{step_id}")
             return
+
         name, ok = QInputDialog.getText(
             self,
-            "新增自定义点击步骤",
-            "步骤名称（例如 点击确认按钮）",
+            "新增自定义页面步骤",
+            "步骤名称（例如 修改昵称9：点击额外保存）",
             text=step_id,
         )
         if not ok:
             return
+
+        operations = [
+            ("点击页面元素", "locator.click"),
+            ("向输入框写入内容", "locator.fill"),
+            ("上传文件/头像", "locator.upload"),
+        ]
+        selected, ok = QInputDialog.getItem(
+            self,
+            "新增自定义页面步骤",
+            "页面操作类型",
+            [label for label, _value in operations],
+            0,
+            False,
+        )
+        if not ok:
+            return
+        step_type = dict(operations)[selected]
+
+        value_source = ""
+        if step_type == "locator.fill":
+            value_source, ok = QInputDialog.getText(
+                self,
+                "输入值来源",
+                "值来源，例如 config.bio_text、state.username、state.first_name，"
+                "或 literal:固定文本",
+                text="literal:",
+            )
+            if not ok:
+                return
+        elif step_type == "locator.upload":
+            value_source = "state.photo_path"
+
         try:
-            item = self.service.make_custom_click_step(
-                str(behavior.get("id") or ""), step_id, str(name or "")
+            item = self.service.make_custom_page_step(
+                str(behavior.get("id") or ""),
+                step_id,
+                str(name or ""),
+                step_type,
+                str(value_source or ""),
             )
         except Exception as exc:
             QMessageBox.critical(self, "新增失败", str(exc))
@@ -124,7 +165,11 @@ class ProfileBehaviorManagerDialogV2(ProfileBehaviorManagerDialog):
             str((behavior or {}).get("id") or ""), item or {}
         )
         if not target_id:
-            QMessageBox.information(self, "无需定位", "当前步骤不是页面点击步骤。")
+            QMessageBox.information(
+                self,
+                "无需定位",
+                "当前步骤是读取配置、等待、校验、键盘或调用行为步骤，没有网页定位目标。",
+            )
             return
         saved = self._save()
         if saved is None:
