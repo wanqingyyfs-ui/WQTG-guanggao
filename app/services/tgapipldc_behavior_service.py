@@ -19,12 +19,14 @@ class TgapipldcBehaviorService:
             sys.path.insert(0, src)
 
         from profile_behavior_locator_bridge import (
+            LOCATOR_CLICK_TYPE,
             MANAGED_BY,
             MANAGED_TARGET_PREFIX,
             blank_managed_target,
             ensure_locator_click_support,
             locator_target_for_step,
             make_custom_click_step,
+            managed_target_id,
         )
 
         ensure_locator_click_support()
@@ -46,7 +48,9 @@ class TgapipldcBehaviorService:
         self._normalize_config = normalize_workflow_config
         self._make_custom_click_step = make_custom_click_step
         self._locator_target_for_step = locator_target_for_step
+        self._managed_target_id = managed_target_id
         self._blank_managed_target = blank_managed_target
+        self._locator_click_type = LOCATOR_CLICK_TYPE
         self._managed_prefix = MANAGED_TARGET_PREFIX
         self._managed_by = MANAGED_BY
         self.locator_config_path = Path(self.workspace.data_dir) / "automation_locators.json"
@@ -65,9 +69,24 @@ class TgapipldcBehaviorService:
     def locator_target_for_step(self, behavior_id: str, step: dict[str, Any] | None) -> str:
         return self._locator_target_for_step(behavior_id, step)
 
+    def _ensure_custom_target_ids(self, config: dict[str, Any]) -> dict[str, Any]:
+        for behavior in config.get(self._config_key) or []:
+            behavior_id = str(behavior.get("id") or "")
+            for item in behavior.get("steps") or []:
+                if str(item.get("type") or "") != self._locator_click_type:
+                    continue
+                params = dict(item.get("params") or {})
+                if not str(params.get("target_id") or "").strip():
+                    params["target_id"] = self._managed_target_id(
+                        behavior_id,
+                        str(item.get("id") or "step"),
+                    )
+                item["params"] = params
+        return config
+
     def load_config(self) -> dict[str, Any]:
         raw = self.workspace.read_profile_maintenance_config()
-        normalized = self._normalize_config(raw)
+        normalized = self._ensure_custom_target_ids(self._normalize_config(raw))
         if normalized != raw:
             self.workspace.save_profile_maintenance_config(normalized)
         self.sync_locator_targets(normalized)
@@ -98,7 +117,7 @@ class TgapipldcBehaviorService:
         for behavior_id, flag in flag_map.items():
             if behavior_id in by_id:
                 current[flag] = bool(by_id[behavior_id].get("enabled", True))
-        normalized = self._normalize_config(current)
+        normalized = self._ensure_custom_target_ids(self._normalize_config(current))
         saved = self.workspace.save_profile_maintenance_config(normalized)
         self.sync_locator_targets(saved)
         return saved
@@ -106,9 +125,9 @@ class TgapipldcBehaviorService:
     def sync_locator_targets(self, config: dict[str, Any] | None = None) -> dict[str, Any]:
         from automation_locator_engine import LocatorConfigStore
 
-        behavior_config = self._normalize_config(
+        behavior_config = self._ensure_custom_target_ids(self._normalize_config(
             config if config is not None else self.workspace.read_profile_maintenance_config()
-        )
+        ))
         store = LocatorConfigStore(self.locator_config_path)
         locator_config = store.load()
         targets = locator_config["targets"]
