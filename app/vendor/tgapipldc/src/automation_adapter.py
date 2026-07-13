@@ -107,6 +107,15 @@ def install_profile_adapter(module) -> dict[str, Any]:
     ):
         _patch(module, function_name, _click_wrapper(target_id))
 
+    if not callable(getattr(module, "click_media_editor_finish", None)):
+        def click_media_editor_finish(page, timeout=15000):
+            return module.click_first_visible([
+                page.locator(".media-editor__finish-button.rp"),
+                page.locator(".media-editor__finish-button"),
+                page.locator("[class*='media-editor__finish-button']"),
+            ], timeout=timeout, force=True)
+        module.click_media_editor_finish = click_media_editor_finish
+
     original_add_folder = getattr(module, "_v16_click_add_folder_button", None)
     if callable(original_add_folder) and not getattr(original_add_folder, "_wqtg_wrapped", False):
         def add_folder_wrapped(page):
@@ -118,6 +127,12 @@ def install_profile_adapter(module) -> dict[str, Any]:
             return original_add_folder(page)
         setattr(add_folder_wrapped, "_wqtg_wrapped", True)
         module._v16_click_add_folder_button = add_folder_wrapped
+
+    try:
+        from profile_behavior_workflow import install_profile_behavior_workflow
+        install_profile_behavior_workflow(module)
+    except Exception as exc:
+        print(f"资料维护行为编排器安装失败，继续使用旧固定流程：{exc}", flush=True)
 
     original_process = getattr(module, "process_account", None)
     if callable(original_process) and not getattr(original_process, "_wqtg_wrapped", False):

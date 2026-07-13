@@ -26,6 +26,62 @@ class TgapipldcLocatorService:
         self.workspace.ensure_structure()
         self.src_dir = self.workspace.src_dir
         self.config_path = self.workspace.data_dir / self.CONFIG_FILE_NAME
+        self._install_profile_behavior_manager_if_available()
+
+    def _install_profile_behavior_manager_if_available(self) -> None:
+        """Attach behavior management to the already-created profile page.
+
+        The locator service is constructed immediately after the profile page is
+        added to the main window. Looking up the page through QApplication keeps
+        this integration isolated and leaves non-GUI/CLI usage unchanged.
+        """
+        profile_page = None
+        try:
+            from PySide6.QtWidgets import QApplication
+
+            application = QApplication.instance()
+            if application is None:
+                return
+            profile_page = next((
+                widget for widget in application.allWidgets()
+                if hasattr(widget, "get_profile_maintenance_config")
+                and hasattr(widget, "set_profile_maintenance_config")
+                and hasattr(widget, "profile_maintenance_requested")
+                and not hasattr(widget, "behavior_manager_button")
+            ), None)
+            if profile_page is None:
+                return
+
+            original_get_config = profile_page.get_profile_maintenance_config
+
+            def get_merged_config() -> dict[str, Any]:
+                current = self.workspace.read_profile_maintenance_config()
+                current.update(dict(original_get_config() or {}))
+                return current
+
+            profile_page.get_profile_maintenance_config = get_merged_config
+
+            from app.gui.tgapipldc_behavior_manager import install_profile_behavior_manager
+            from app.gui import tgapipldc_panel_bootstrap as panel_bootstrap
+
+            window = profile_page.window()
+            run_callback = None
+            if window is not None and hasattr(window, "runtime_service"):
+                run_callback = lambda action, config: panel_bootstrap._run_profile_maintenance(
+                    window, action, config
+                )
+            install_profile_behavior_manager(
+                profile_page,
+                self.workspace,
+                run_callback=run_callback,
+                parent=window or profile_page,
+            )
+        except Exception as exc:
+            try:
+                if profile_page is not None and hasattr(profile_page, "append_log"):
+                    profile_page.append_log(f"行为与步骤管理器加载失败：{exc}")
+            except Exception:
+                pass
 
     def _store(self):
         src = str(self.src_dir)
