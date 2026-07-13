@@ -119,6 +119,12 @@ def install_profile_adapter(module) -> dict[str, Any]:
         setattr(add_folder_wrapped, "_wqtg_wrapped", True)
         module._v16_click_add_folder_button = add_folder_wrapped
 
+    try:
+        from profile_behavior_workflow import install_profile_behavior_workflow
+        install_profile_behavior_workflow(module)
+    except Exception as exc:
+        print(f"资料维护行为编排器安装失败，继续使用旧固定流程：{exc}", flush=True)
+
     original_process = getattr(module, "process_account", None)
     if callable(original_process) and not getattr(original_process, "_wqtg_wrapped", False):
         def process_wrapped(action, config, account, account_index, total, used_photos):
