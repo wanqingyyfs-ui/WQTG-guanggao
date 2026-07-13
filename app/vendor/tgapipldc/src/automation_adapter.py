@@ -129,7 +129,10 @@ def install_profile_adapter(module) -> dict[str, Any]:
         module._v16_click_add_folder_button = add_folder_wrapped
 
     try:
+        from profile_behavior_locator_bridge import ensure_locator_click_support
         from profile_behavior_workflow import install_profile_behavior_workflow
+
+        ensure_locator_click_support()
         install_profile_behavior_workflow(module)
     except Exception as exc:
         print(f"资料维护行为编排器安装失败，继续使用旧固定流程：{exc}", flush=True)
