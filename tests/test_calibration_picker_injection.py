@@ -59,6 +59,7 @@ class CalibrationPickerInjectionTests(unittest.TestCase):
         self.assertIn("'pointerdown'", script)
         self.assertIn("wqtgLocatorReady", script)
         self.assertNotIn("panel.addEventListener('click', stopEvent", script)
+        self.assertNotIn("previous.version === VERSION", script)
 
     def test_restored_current_page_is_explicitly_injected(self) -> None:
         page = FakePage()
@@ -73,6 +74,8 @@ class CalibrationPickerInjectionTests(unittest.TestCase):
         installer.configure_context(context)
         self.assertIn("wqtgSaveLocator", context.exposed)
         self.assertIn("wqtgLocatorReady", context.exposed)
+        self.assertTrue(hasattr(installer._ready_bridge, "__dict__"))
+        self.assertTrue(hasattr(installer._save_bridge, "__dict__"))
         self.assertEqual(len(context.init_scripts), 1)
         self.assertTrue(installer.ensure_page(page))
         self.assertGreaterEqual(len(page.evaluated), 2)
