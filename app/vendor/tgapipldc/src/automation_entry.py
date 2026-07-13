@@ -11,6 +11,7 @@ from typing import Any
 from automation_adapter import install_login_adapter, install_profile_adapter
 from automation_locator_engine import LocatorConfigStore, build_selector_for_element, calibration_init_script
 from profile_lock import ProfileLock
+from proxy_utils import parse_raw_proxy
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -142,6 +143,100 @@ def run_profile(action: str) -> int:
     return 0 if state.get("rows") and all(str(row.get("final_status") or "") == "success" for row in state["rows"]) else 2
 
 
+def _is_proxy_auth_error(exc: BaseException | str) -> bool:
+    text = str(exc or "").lower()
+    return any(marker in text for marker in (
+        "err_invalid_auth_credentials",
+        "proxy authentication required",
+        "proxy authentication failed",
+        "407 proxy authentication",
+    ))
+
+
+def _configure_calibration_context(context, target_id: str, save_locator) -> None:
+    context.expose_function("wqtgSaveLocator", save_locator)
+    context.add_init_script(calibration_init_script(target_id))
+
+
+def _open_calibration_browser(
+    playwright,
+    *,
+    profile_path: Path,
+    viewport: dict[str, Any],
+    target_id: str,
+    url: str,
+    raw_proxy: str,
+    save_locator,
+):
+    """Open calibration browser and retry direct only for proxy-auth failures.
+
+    API export and profile maintenance remain proxy-strict. The direct retry is
+    intentionally limited to the visual locator calibration tool.
+    """
+    target_url = url or "https://web.telegram.org/k/"
+    base_kwargs: dict[str, Any] = {
+        "user_data_dir": str(profile_path),
+        "headless": False,
+        "viewport": viewport,
+    }
+    parsed_proxy = None
+    proxy_problem = ""
+    if str(raw_proxy or "").strip():
+        try:
+            parsed_proxy = parse_raw_proxy(raw_proxy)
+        except ValueError as exc:
+            proxy_problem = str(exc)
+            print(
+                f"校准代理配置不可用：{proxy_problem}。"
+                "将仅为定位校准改用直连；API 批量和资料维护仍会要求有效代理。",
+                flush=True,
+            )
+
+    attempts = []
+    if parsed_proxy:
+        attempts.append(("proxy", parsed_proxy.playwright_proxy))
+    attempts.append(("direct", None))
+
+    first_auth_error = proxy_problem
+    for mode, proxy_settings in attempts:
+        launch_kwargs = dict(base_kwargs)
+        if proxy_settings:
+            launch_kwargs["proxy"] = proxy_settings
+        context = playwright.chromium.launch_persistent_context(**launch_kwargs)
+        attempt_succeeded = False
+        try:
+            _configure_calibration_context(context, target_id, save_locator)
+            page = context.pages[0] if context.pages else context.new_page()
+            try:
+                page.goto(target_url, wait_until="commit", timeout=20000)
+            except BaseException as exc:
+                if mode == "proxy" and parsed_proxy and _is_proxy_auth_error(exc):
+                    first_auth_error = str(exc)
+                    print(
+                        "校准代理认证失败（ERR_INVALID_AUTH_CREDENTIALS）。"
+                        "将仅为定位校准自动改用直连重试一次；API 批量和资料维护仍严格使用代理。",
+                        flush=True,
+                    )
+                    continue
+                if mode == "direct" and first_auth_error:
+                    raise RuntimeError(
+                        "代理账号或密码无效，且校准浏览器直连重试也失败。"
+                        "请在 API 批量工作台重新保存完整动态代理并生成运行表。"
+                        f"代理错误：{first_auth_error}；直连错误：{exc}"
+                    ) from exc
+                raise
+            attempt_succeeded = True
+            return context, page, mode == "direct" and bool(str(raw_proxy or "").strip())
+        finally:
+            if not attempt_succeeded:
+                try:
+                    context.close()
+                except Exception:
+                    pass
+
+    raise RuntimeError("校准浏览器启动失败")
+
+
 def run_calibrate(target_id: str, profile_dir: str, url: str, proxy: str) -> int:
     from playwright.sync_api import sync_playwright
 
@@ -154,13 +249,13 @@ def run_calibrate(target_id: str, profile_dir: str, url: str, proxy: str) -> int
     profile_path = (BASE_DIR / profile_dir).resolve() if not Path(profile_dir).is_absolute() else Path(profile_dir).resolve()
     lock_root = DATA_DIR / "profile_locks"
     captured: list[dict[str, Any]] = []
+    used_direct_fallback = False
+    error = ""
 
     def save_locator(payload: dict[str, Any]) -> None:
         selector = build_selector_for_element(payload)
         target = store.load()["targets"][target_id]
-        strategies = [
-            {"type": "css", "value": selector, "enabled": True},
-        ]
+        strategies = [{"type": "css", "value": selector, "enabled": True}]
         text = str(payload.get("text") or "").strip()
         if text:
             strategies.append({"type": "text", "value_regex": re_escape(text[:100]), "enabled": True})
@@ -175,33 +270,59 @@ def run_calibrate(target_id: str, profile_dir: str, url: str, proxy: str) -> int
         captured.append(payload)
         print(f"已保存定位目标 {target_id}：{selector}", flush=True)
 
-    with ProfileLock(profile_path, lock_root, job_id=os.environ.get("WQTG_JOB_ID", "calibrate")):
-        with sync_playwright() as playwright:
-            launch_kwargs: dict[str, Any] = {
-                "user_data_dir": str(profile_path),
-                "headless": False,
-                "viewport": config.get("viewport") or {"width": 1200, "height": 900},
-            }
-            if proxy.strip():
-                import login_telegram_web as login_module
-                launch_kwargs["proxy"] = login_module.parse_raw_proxy(proxy).playwright_proxy
-            context = playwright.chromium.launch_persistent_context(**launch_kwargs)
-            context.expose_function("wqtgSaveLocator", save_locator)
-            context.add_init_script(calibration_init_script(target_id))
-            page = context.pages[0] if context.pages else context.new_page()
-            page.goto(url or "https://web.telegram.org/k/", wait_until="commit", timeout=20000)
-            print("校准浏览器已打开。按住 Ctrl + Shift 点击目标元素；保存后关闭浏览器。", flush=True)
-            try:
-                while context.pages:
-                    time.sleep(0.5)
-            except KeyboardInterrupt:
-                pass
-            finally:
+    try:
+        with ProfileLock(profile_path, lock_root, job_id=os.environ.get("WQTG_JOB_ID", "calibrate")):
+            with sync_playwright() as playwright:
+                context = None
                 try:
-                    context.close()
-                except Exception:
-                    pass
-    _write_summary({"job_type": "locator-calibration", "status": "success" if captured else "cancelled", "target_id": target_id, "captured": captured})
+                    context, _page, used_direct_fallback = _open_calibration_browser(
+                        playwright,
+                        profile_path=profile_path,
+                        viewport=config.get("viewport") or {"width": 1200, "height": 900},
+                        target_id=target_id,
+                        url=url,
+                        raw_proxy=proxy,
+                        save_locator=save_locator,
+                    )
+                    print("校准浏览器已打开。按住 Ctrl + Shift 点击目标元素；保存后关闭浏览器。", flush=True)
+                    if used_direct_fallback:
+                        print("当前校准浏览器使用直连；这不会修改账号运行表中的代理。", flush=True)
+                    try:
+                        while context.pages:
+                            time.sleep(0.5)
+                    except KeyboardInterrupt:
+                        pass
+                finally:
+                    if context is not None:
+                        try:
+                            context.close()
+                        except Exception:
+                            pass
+    except BaseException as exc:
+        error = str(exc)
+        _write_summary({
+            "job_id": os.environ.get("WQTG_JOB_ID", ""),
+            "job_type": "locator-calibration",
+            "status": "failed",
+            "target_id": target_id,
+            "captured": captured,
+            "used_direct_fallback": used_direct_fallback,
+            "error": error,
+            "finished_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        })
+        raise
+
+    status = "success" if captured else "cancelled"
+    _write_summary({
+        "job_id": os.environ.get("WQTG_JOB_ID", ""),
+        "job_type": "locator-calibration",
+        "status": status,
+        "target_id": target_id,
+        "captured": captured,
+        "used_direct_fallback": used_direct_fallback,
+        "error": error,
+        "finished_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+    })
     return 0 if captured else 3
 
 
