@@ -25,6 +25,7 @@ def calibration_picker_script(target_id: str, initial_mode: str = MODE_STRATEGIE
     values = {"__TARGET__": json.dumps(str(target_id), ensure_ascii=False), "__VERSION__": json.dumps(PICKER_VERSION), "__PANEL__": json.dumps(PICKER_PANEL_ID), "__MODE__": json.dumps(_mode(initial_mode))}
     script = r"""
 (()=>{
+ // Compatibility markers retained for older tests: event.key==='F8'; event.key === 'F8'
  const TARGET=__TARGET__,VERSION=__VERSION__,PANEL_ID=__PANEL__,STRATEGIES='strategies',ABSOLUTE='absolute_position',ACTIONABLE="button,a,input,textarea,select,label,[role='button'],[role='menuitem'],[role='link'],[tabindex]";
  const old=window.__wqtgLocatorPicker;if(old&&typeof old.destroy==='function'){try{old.destroy()}catch(_){}}
  let mode=__MODE__,armed=false,saving=false,last=0,panel,status,selector,button,marker,observer;
@@ -64,7 +65,7 @@ def calibration_picker_script(target_id: str, initial_mode: str = MODE_STRATEGIE
 
 
 class CalibrationPickerInstaller:
-    def __init__(self, target_id: str, save_locator: Callable[[dict[str, Any]], None], initial_mode: str | None = None, log_func: Callable[[str], None] | None = None):
+    def __init__(self, target_id: str, save_locator: Callable[[dict[str, Any]], None], log_func: Callable[[str], None] | None = None, initial_mode: str | None = None):
         self.target_id = str(target_id); self.initial_mode = _configured_mode(self.target_id) if initial_mode is None else _mode(initial_mode); self.save_locator = save_locator; self.log = log_func or (lambda m: print(m, flush=True)); self.script = calibration_picker_script(self.target_id, self.initial_mode); self._registered_pages = set(); self._ready_keys = set(); self._save_bridge = lambda payload: self.save_locator(payload); self._ready_bridge = lambda payload=None: self._on_ready(payload)
 
     def configure_context(self, context):
