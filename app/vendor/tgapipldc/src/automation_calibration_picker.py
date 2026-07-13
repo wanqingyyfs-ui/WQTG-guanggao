@@ -23,11 +23,6 @@ def calibration_picker_script(target_id: str) -> str:
   const ACTIONABLE = "button,a,input,textarea,select,label,[role='button'],[role='menuitem'],[role='link'],[tabindex]";
 
   const previous = window.__wqtgLocatorPicker;
-  if (previous && previous.version === VERSION) {
-    previous.ensurePanel();
-    previous.reportReady('reused');
-    return {installed: true, reused: true, version: VERSION};
-  }
   if (previous && typeof previous.destroy === 'function') {
     try { previous.destroy(); } catch (_) {}
   }
@@ -298,10 +293,12 @@ class CalibrationPickerInstaller:
         self.script = calibration_picker_script(self.target_id)
         self._registered_pages: set[int] = set()
         self._ready_keys: set[tuple[str, str]] = set()
+        self._save_bridge = lambda payload: self.save_locator(payload)
+        self._ready_bridge = lambda payload=None: self._on_ready(payload)
 
     def configure_context(self, context) -> None:
-        context.expose_function("wqtgSaveLocator", self.save_locator)
-        context.expose_function("wqtgLocatorReady", self._on_ready)
+        context.expose_function("wqtgSaveLocator", self._save_bridge)
+        context.expose_function("wqtgLocatorReady", self._ready_bridge)
         context.add_init_script(self.script)
         if hasattr(context, "on"):
             context.on("page", self.register_page)
