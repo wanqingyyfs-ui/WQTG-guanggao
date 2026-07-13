@@ -5,7 +5,6 @@ from copy import deepcopy
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QCheckBox,
     QComboBox,
     QDoubleSpinBox,
     QFrame,
@@ -15,10 +14,15 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPlainTextEdit,
     QPushButton,
+    QSpinBox,
     QSplitter,
     QVBoxLayout,
     QWidget,
 )
+
+
+MODE_STRATEGIES = "strategies"
+MODE_ABSOLUTE = "absolute_position"
 
 
 class TgapipldcLocatorPage(QWidget):
@@ -38,7 +42,9 @@ class TgapipldcLocatorPage(QWidget):
         self.title_label.setObjectName("PageTitleLabel")
         self.status_label = QLabel("状态：准备就绪")
         self.status_label.setObjectName("DashboardStatusLabel")
-        self.status_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.status_label.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
 
         self.target_combo = QComboBox()
         self.target_combo.setMinimumWidth(360)
@@ -50,15 +56,27 @@ class TgapipldcLocatorPage(QWidget):
         self.profile_combo.setMinimumWidth(360)
         self.url_edit = QLineEdit("https://web.telegram.org/k/")
 
-        self.coordinate_enabled_checkbox = QCheckBox("启用相对坐标兜底")
-        self.coordinate_x_spinbox = QDoubleSpinBox()
-        self.coordinate_x_spinbox.setRange(0.0, 1.0)
-        self.coordinate_x_spinbox.setDecimals(6)
-        self.coordinate_x_spinbox.setSingleStep(0.001)
-        self.coordinate_y_spinbox = QDoubleSpinBox()
-        self.coordinate_y_spinbox.setRange(0.0, 1.0)
-        self.coordinate_y_spinbox.setDecimals(6)
-        self.coordinate_y_spinbox.setSingleStep(0.001)
+        self.locator_mode_combo = QComboBox()
+        self.locator_mode_combo.addItem("Strategies（元素特征）", MODE_STRATEGIES)
+        self.locator_mode_combo.addItem("绝对位置（像素坐标）", MODE_ABSOLUTE)
+        self.locator_mode_combo.setMinimumWidth(220)
+
+        self.absolute_x_spinbox = QDoubleSpinBox()
+        self.absolute_x_spinbox.setRange(0.0, 10000.0)
+        self.absolute_x_spinbox.setDecimals(1)
+        self.absolute_x_spinbox.setSingleStep(1.0)
+        self.absolute_y_spinbox = QDoubleSpinBox()
+        self.absolute_y_spinbox.setRange(0.0, 10000.0)
+        self.absolute_y_spinbox.setDecimals(1)
+        self.absolute_y_spinbox.setSingleStep(1.0)
+        self.viewport_width_spinbox = QSpinBox()
+        self.viewport_width_spinbox.setRange(1, 10000)
+        self.viewport_width_spinbox.setValue(1200)
+        self.viewport_height_spinbox = QSpinBox()
+        self.viewport_height_spinbox.setRange(1, 10000)
+        self.viewport_height_spinbox.setValue(900)
+        self.absolute_captured_label = QLabel("绝对位置：尚未校准")
+        self.absolute_captured_label.setObjectName("TgapipldcSmallLabel")
 
         self.target_json_edit = QPlainTextEdit()
         self.target_json_edit.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
@@ -115,19 +133,29 @@ class TgapipldcLocatorPage(QWidget):
 
         calibration_grid = QGridLayout()
         calibration_grid.addWidget(QLabel("测试 Profile"), 0, 0)
-        calibration_grid.addWidget(self.profile_combo, 0, 1, 1, 3)
+        calibration_grid.addWidget(self.profile_combo, 0, 1, 1, 5)
         calibration_grid.addWidget(QLabel("打开地址"), 1, 0)
-        calibration_grid.addWidget(self.url_edit, 1, 1, 1, 3)
-        calibration_grid.addWidget(self.coordinate_enabled_checkbox, 2, 0)
-        calibration_grid.addWidget(QLabel("X 比例"), 2, 1)
-        calibration_grid.addWidget(self.coordinate_x_spinbox, 2, 2)
-        calibration_grid.addWidget(QLabel("Y 比例"), 2, 3)
-        calibration_grid.addWidget(self.coordinate_y_spinbox, 2, 4)
+        calibration_grid.addWidget(self.url_edit, 1, 1, 1, 5)
+        calibration_grid.addWidget(QLabel("运行定位模式"), 2, 0)
+        calibration_grid.addWidget(self.locator_mode_combo, 2, 1, 1, 2)
+        calibration_grid.addWidget(self.absolute_captured_label, 2, 3, 1, 3)
+        calibration_grid.addWidget(QLabel("绝对 X"), 3, 0)
+        calibration_grid.addWidget(self.absolute_x_spinbox, 3, 1)
+        calibration_grid.addWidget(QLabel("绝对 Y"), 3, 2)
+        calibration_grid.addWidget(self.absolute_y_spinbox, 3, 3)
+        calibration_grid.addWidget(QLabel("校准视口"), 3, 4)
+        viewport_row = QHBoxLayout()
+        viewport_row.setContentsMargins(0, 0, 0, 0)
+        viewport_row.addWidget(self.viewport_width_spinbox)
+        viewport_row.addWidget(QLabel("×"))
+        viewport_row.addWidget(self.viewport_height_spinbox)
+        calibration_grid.addLayout(viewport_row, 3, 5)
         config_layout.addLayout(calibration_grid)
 
         hint = QLabel(
-            "校准方法：选择 Profile 和目标，点击“打开校准浏览器”，在网页中按住 Ctrl + Shift 点击真实按钮。"
-            "程序会自动保存 CSS、语义名称和相对坐标；Telegram 网页更新后可重新校准。"
+            "定位模式互斥：Strategies 只使用 role/CSS/text/XPath；绝对位置只按校准时记录的像素坐标点击，"
+            "不会先寻找页面中的同类按钮。两套数据会同时保留，可随时切换。打开校准浏览器后，"
+            "顶部也能选择要保存的模式。"
         )
         hint.setWordWrap(True)
         hint.setObjectName("TgapipldcSmallLabel")
@@ -154,7 +182,7 @@ class TgapipldcLocatorPage(QWidget):
         splitter.addWidget(log_frame)
         splitter.setStretchFactor(0, 3)
         splitter.setStretchFactor(1, 2)
-        splitter.setSizes([500, 240])
+        splitter.setSizes([520, 240])
 
         for button in (
             self.reload_button,
@@ -175,11 +203,23 @@ class TgapipldcLocatorPage(QWidget):
         self.save_button.clicked.connect(self._emit_save)
         self.reset_button.clicked.connect(self._emit_reset)
         self.calibrate_button.clicked.connect(self._emit_calibrate)
-        self.open_directory_button.clicked.connect(self.open_config_directory_requested.emit)
+        self.open_directory_button.clicked.connect(
+            self.open_config_directory_requested.emit
+        )
         self.stop_button.clicked.connect(self.stop_process_requested.emit)
-        self.coordinate_enabled_checkbox.toggled.connect(self._apply_coordinate_fields_to_json)
-        self.coordinate_x_spinbox.valueChanged.connect(self._apply_coordinate_fields_to_json)
-        self.coordinate_y_spinbox.valueChanged.connect(self._apply_coordinate_fields_to_json)
+        self.locator_mode_combo.currentIndexChanged.connect(self._apply_mode_to_json)
+        self.absolute_x_spinbox.valueChanged.connect(
+            self._apply_absolute_fields_to_json
+        )
+        self.absolute_y_spinbox.valueChanged.connect(
+            self._apply_absolute_fields_to_json
+        )
+        self.viewport_width_spinbox.valueChanged.connect(
+            self._apply_absolute_fields_to_json
+        )
+        self.viewport_height_spinbox.valueChanged.connect(
+            self._apply_absolute_fields_to_json
+        )
 
     def set_targets(self, targets: dict[str, dict]) -> None:
         selected_id = self.current_target_id()
@@ -217,7 +257,9 @@ class TgapipldcLocatorPage(QWidget):
             if not profile_dir:
                 continue
             self._profiles.append(payload)
-            self.profile_combo.addItem(str(payload.get("display_name") or profile_dir), profile_dir)
+            self.profile_combo.addItem(
+                str(payload.get("display_name") or profile_dir), profile_dir
+            )
         if selected:
             index = self.profile_combo.findData(selected)
             if index >= 0:
@@ -232,8 +274,13 @@ class TgapipldcLocatorPage(QWidget):
     def current_target_json(self) -> str:
         return self.target_json_edit.toPlainText()
 
+    def current_locator_mode(self) -> str:
+        return str(self.locator_mode_combo.currentData() or MODE_STRATEGIES)
+
     def set_status(self, text: str) -> None:
-        self.status_label.setText(f"状态：{str(text or '').strip() or '准备就绪'}")
+        self.status_label.setText(
+            f"状态：{str(text or '').strip() or '准备就绪'}"
+        )
 
     def set_process_running(self, running: bool) -> None:
         is_running = bool(running)
@@ -241,6 +288,11 @@ class TgapipldcLocatorPage(QWidget):
             self.target_combo,
             self.profile_combo,
             self.url_edit,
+            self.locator_mode_combo,
+            self.absolute_x_spinbox,
+            self.absolute_y_spinbox,
+            self.viewport_width_spinbox,
+            self.viewport_height_spinbox,
             self.target_json_edit,
             self.reload_button,
             self.save_button,
@@ -269,51 +321,81 @@ class TgapipldcLocatorPage(QWidget):
             else "请选择定位目标"
         )
         self.target_json_edit.blockSignals(True)
-        self.target_json_edit.setPlainText(json.dumps(target, ensure_ascii=False, indent=2))
+        self.target_json_edit.setPlainText(
+            json.dumps(target, ensure_ascii=False, indent=2)
+        )
         self.target_json_edit.blockSignals(False)
-        self._sync_coordinate_fields_from_target(target)
+        self._sync_mode_fields_from_target(target)
 
-    def _sync_coordinate_fields_from_target(self, target: dict) -> None:
-        coordinate = None
-        for strategy in target.get("strategies") or []:
-            if isinstance(strategy, dict) and strategy.get("type") == "relative_coordinate":
-                coordinate = strategy
-                break
-        self.coordinate_enabled_checkbox.blockSignals(True)
-        self.coordinate_x_spinbox.blockSignals(True)
-        self.coordinate_y_spinbox.blockSignals(True)
-        self.coordinate_enabled_checkbox.setChecked(bool(coordinate and coordinate.get("enabled", False)))
-        self.coordinate_x_spinbox.setValue(float((coordinate or {}).get("x_ratio") or 0.0))
-        self.coordinate_y_spinbox.setValue(float((coordinate or {}).get("y_ratio") or 0.0))
-        self.coordinate_enabled_checkbox.blockSignals(False)
-        self.coordinate_x_spinbox.blockSignals(False)
-        self.coordinate_y_spinbox.blockSignals(False)
+    def _sync_mode_fields_from_target(self, target: dict) -> None:
+        mode = str(target.get("locator_mode") or MODE_STRATEGIES)
+        mode_index = self.locator_mode_combo.findData(mode)
+        absolute = (
+            target.get("absolute_position")
+            if isinstance(target.get("absolute_position"), dict)
+            else {}
+        )
+        widgets = (
+            self.locator_mode_combo,
+            self.absolute_x_spinbox,
+            self.absolute_y_spinbox,
+            self.viewport_width_spinbox,
+            self.viewport_height_spinbox,
+        )
+        for widget in widgets:
+            widget.blockSignals(True)
+        self.locator_mode_combo.setCurrentIndex(max(0, mode_index))
+        self.absolute_x_spinbox.setValue(float(absolute.get("x") or 0.0))
+        self.absolute_y_spinbox.setValue(float(absolute.get("y") or 0.0))
+        self.viewport_width_spinbox.setValue(
+            max(1, int(absolute.get("viewport_width") or 1200))
+        )
+        self.viewport_height_spinbox.setValue(
+            max(1, int(absolute.get("viewport_height") or 900))
+        )
+        for widget in widgets:
+            widget.blockSignals(False)
+        captured = bool(absolute.get("captured", False))
+        self.absolute_captured_label.setText(
+            "绝对位置：已校准" if captured else "绝对位置：尚未校准"
+        )
 
-    def _apply_coordinate_fields_to_json(self) -> None:
+    def _target_from_editor(self) -> dict | None:
         try:
             target = json.loads(self.target_json_edit.toPlainText() or "{}")
         except Exception:
-            return
-        if not isinstance(target, dict):
-            return
-        strategies = list(target.get("strategies") or [])
-        coordinate = None
-        for strategy in strategies:
-            if isinstance(strategy, dict) and strategy.get("type") == "relative_coordinate":
-                coordinate = strategy
-                break
-        if coordinate is None:
-            coordinate = {"type": "relative_coordinate"}
-            strategies.append(coordinate)
-        coordinate["x_ratio"] = float(self.coordinate_x_spinbox.value())
-        coordinate["y_ratio"] = float(self.coordinate_y_spinbox.value())
-        coordinate["enabled"] = self.coordinate_enabled_checkbox.isChecked()
-        target["strategies"] = strategies
+            return None
+        return target if isinstance(target, dict) else None
+
+    def _replace_editor_target(self, target: dict) -> None:
         cursor = self.target_json_edit.textCursor()
         self.target_json_edit.blockSignals(True)
-        self.target_json_edit.setPlainText(json.dumps(target, ensure_ascii=False, indent=2))
+        self.target_json_edit.setPlainText(
+            json.dumps(target, ensure_ascii=False, indent=2)
+        )
         self.target_json_edit.setTextCursor(cursor)
         self.target_json_edit.blockSignals(False)
+
+    def _apply_mode_to_json(self) -> None:
+        target = self._target_from_editor()
+        if target is None:
+            return
+        target["locator_mode"] = self.current_locator_mode()
+        self._replace_editor_target(target)
+
+    def _apply_absolute_fields_to_json(self) -> None:
+        target = self._target_from_editor()
+        if target is None:
+            return
+        target["absolute_position"] = {
+            "x": float(self.absolute_x_spinbox.value()),
+            "y": float(self.absolute_y_spinbox.value()),
+            "viewport_width": int(self.viewport_width_spinbox.value()),
+            "viewport_height": int(self.viewport_height_spinbox.value()),
+            "captured": True,
+        }
+        self.absolute_captured_label.setText("绝对位置：已校准（手动设置）")
+        self._replace_editor_target(target)
 
     def _emit_save(self) -> None:
         target_id = self.current_target_id()
@@ -329,4 +411,10 @@ class TgapipldcLocatorPage(QWidget):
         target_id = self.current_target_id()
         profile_dir = self.current_profile_dir()
         if target_id and profile_dir:
-            self.calibrate_requested.emit(target_id, profile_dir, self.url_edit.text().strip())
+            self._apply_mode_to_json()
+            self.save_target_requested.emit(target_id, self.current_target_json())
+            self.calibrate_requested.emit(
+                target_id,
+                profile_dir,
+                self.url_edit.text().strip(),
+            )
