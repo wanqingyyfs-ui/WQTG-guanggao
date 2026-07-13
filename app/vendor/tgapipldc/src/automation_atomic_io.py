@@ -51,13 +51,12 @@ def atomic_write_csv(
     path = Path(file_path).expanduser().resolve()
     path.parent.mkdir(parents=True, exist_ok=True)
     with locked_path(path):
-        backup = path.with_suffix(path.suffix + ".bak")
-        if path.exists() and path.is_file():
-            try:
-                shutil.copy2(path, backup)
-            except Exception:
-                pass
-        fd, temp_name = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=str(path.parent))
+        _backup(path)
+        fd, temp_name = tempfile.mkstemp(
+            prefix=path.name + ".",
+            suffix=".tmp",
+            dir=str(path.parent),
+        )
         temp_path = Path(temp_name)
         try:
             with os.fdopen(fd, "w", encoding=encoding, newline="") as file:
@@ -95,7 +94,11 @@ def append_csv_row_locked(
     return path
 
 
-def read_csv_rows(file_path: str | Path, *, encoding: str = "utf-8-sig") -> tuple[list[str], list[dict[str, str]]]:
+def read_csv_rows(
+    file_path: str | Path,
+    *,
+    encoding: str = "utf-8-sig",
+) -> tuple[list[str], list[dict[str, str]]]:
     path = Path(file_path).expanduser().resolve()
     if not path.exists():
         return [], []
@@ -103,6 +106,34 @@ def read_csv_rows(file_path: str | Path, *, encoding: str = "utf-8-sig") -> tupl
         with path.open("r", encoding=encoding, newline="") as file:
             reader = csv.DictReader(file)
             return list(reader.fieldnames or []), [dict(row) for row in reader]
+
+
+def atomic_write_text(file_path: str | Path, text: str, *, encoding: str = "utf-8") -> Path:
+    path = Path(file_path).expanduser().resolve()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with locked_path(path):
+        _backup(path)
+        fd, temp_name = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=str(path.parent))
+        temp_path = Path(temp_name)
+        try:
+            with os.fdopen(fd, "w", encoding=encoding, newline="\n") as file:
+                file.write(text)
+                file.flush()
+                os.fsync(file.fileno())
+            temp_path.replace(path)
+        except Exception:
+            temp_path.unlink(missing_ok=True)
+            raise
+    return path
+
+
+def _backup(path: Path) -> None:
+    if not path.exists() or not path.is_file():
+        return
+    try:
+        shutil.copy2(path, path.with_suffix(path.suffix + ".bak"))
+    except Exception:
+        pass
 
 
 def _lock_file(file) -> None:

@@ -9,6 +9,7 @@ from app.services.runtime_service import RuntimeService as BaseRuntimeService
 from app.services.scheduler_service import SchedulerService
 from app.services.tgapipldc_account_bind_service import TgapipldcAccountBindService
 from app.services.tgapipldc_import_service import TgapipldcImportService
+from app.services.tgapipldc_locator_service import TgapipldcLocatorService
 from app.services.tgapipldc_proxy_service import TgapipldcProxyService
 from app.services.tgapipldc_runner_service import TgapipldcRunnerService
 from app.services.tgapipldc_safe_workspace_service import SafeTgapipldcWorkspaceService
@@ -16,19 +17,18 @@ from app.services.yanzheng_login_provider import YanzhengLoginInputProvider
 
 
 class RuntimeService(BaseRuntimeService):
-    """Grouped runtime with explicit safe manager and unified cancellable jobs."""
+    """Grouped runtime with explicit safe services and unified cancellable automation jobs."""
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        safe_workspace = SafeTgapipldcWorkspaceService(
-            self.tgapipldc_workspace_service.workspace_dir
-        )
+        safe_workspace = SafeTgapipldcWorkspaceService(self.tgapipldc_workspace_service.workspace_dir)
         safe_workspace.ensure_structure()
         self.tgapipldc_workspace_service = safe_workspace
-        self.tgapipldc_proxy_service = TgapipldcProxyService(safe_workspace)
-        self.tgapipldc_account_bind_service = TgapipldcAccountBindService(safe_workspace)
-        self.tgapipldc_runner_service = TgapipldcRunnerService(safe_workspace)
-        self.tgapipldc_import_service = TgapipldcImportService(safe_workspace)
+        self.tgapipldc_proxy_service = TgapipldcProxyService(workspace_service=safe_workspace)
+        self.tgapipldc_account_bind_service = TgapipldcAccountBindService(workspace_service=safe_workspace)
+        self.tgapipldc_runner_service = TgapipldcRunnerService(workspace_service=safe_workspace)
+        self.tgapipldc_import_service = TgapipldcImportService(workspace_service=safe_workspace)
+        self.tgapipldc_locator_service = TgapipldcLocatorService(workspace_service=safe_workspace)
         self._wqtg_login_future: concurrent.futures.Future | None = None
         self._wqtg_login_lock = threading.RLock()
 
@@ -125,57 +125,25 @@ class RuntimeService(BaseRuntimeService):
             if self._wqtg_login_future is future:
                 self._wqtg_login_future = None
 
-    async def _login_wqtg_accounts_with_yanzheng(self, manager, provider) -> None:
-        accounts = [account for account in self.accounts if bool(getattr(account, "enabled", True))]
-        total = len(accounts)
-        self.tgapipldc_process_status_changed.emit(True)
-        self._emit_tgapipldc_log(f"WQTG 批量登录开始：共 {total} 个启用账号")
-        try:
-            for index, account in enumerate(accounts, start=1):
-                account_name = str(getattr(account, "account_name", "") or "").strip()
-                self._emit_tgapipldc_log(f"[{index}/{total}] 开始登录 WQTG 账号：{account_name}")
-                try:
-                    await manager.login_account(account_name, input_provider=provider)
-                    self._emit_tgapipldc_log(f"[{index}/{total}] WQTG 账号登录完成：{account_name}")
-                except asyncio.CancelledError:
-                    self._emit_tgapipldc_log("WQTG 批量登录已取消")
-                    raise
-                except Exception as exc:
-                    self._emit_tgapipldc_log(
-                        f"[{index}/{total}] WQTG 账号登录失败：{account_name}，原因：{exc}"
-                    )
-            self._emit_tgapipldc_log("WQTG 批量登录流程结束")
-        finally:
-            self.tgapipldc_process_status_changed.emit(False)
-
     def stop_tgapipldc_process(self) -> None:
         stopped_process = self.tgapipldc_runner_service.stop_current_process()
         with self._wqtg_login_lock:
             future = self._wqtg_login_future
         cancelled_login = bool(future is not None and not future.done() and future.cancel())
         if stopped_process or cancelled_login:
-            self._emit_tgapipldc_log("已请求停止当前 tgapipldc 流程及关联子任务")
+            self._emit_tgapipldc_log("已请求停止当前 tgapipldc 流程及其子任务")
         else:
             self._emit_tgapipldc_log("当前没有可停止的 tgapipldc 流程")
 
     def start_task_scheduler(self, task_id: str) -> None:
         self.reload_config_cache()
-        task = next(
-            (
-                item
-                for item in self.tasks
-                if str(getattr(item, "task_id", "") or "") == str(task_id or "")
-            ),
-            None,
-        )
+        task = next((item for item in self.tasks if str(getattr(item, "task_id", "") or "") == str(task_id or "")), None)
         if task is None:
             raise RuntimeError("任务不存在")
         if not bool(getattr(task, "enabled", True)):
             raise RuntimeError("未启用任务不能启动，请先启用任务")
         scheduler = self._get_scheduler()
-        self._submit_coroutine(
-            self._start_single_task_and_update_status(scheduler, str(task_id or ""))
-        )
+        self._submit_coroutine(self._start_single_task_and_update_status(scheduler, str(task_id or "")))
 
     async def _start_single_task_and_update_status(self, scheduler: SchedulerService, task_id: str) -> None:
         try:
@@ -187,9 +155,7 @@ class RuntimeService(BaseRuntimeService):
 
     def stop_task_scheduler(self, task_id: str) -> None:
         scheduler = self._get_scheduler()
-        self._submit_coroutine(
-            self._stop_single_task_and_update_status(scheduler, str(task_id or ""))
-        )
+        self._submit_coroutine(self._stop_single_task_and_update_status(scheduler, str(task_id or "")))
 
     async def _stop_single_task_and_update_status(self, scheduler: SchedulerService, task_id: str) -> None:
         try:

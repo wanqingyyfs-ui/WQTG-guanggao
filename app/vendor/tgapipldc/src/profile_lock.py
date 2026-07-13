@@ -10,11 +10,11 @@ from typing import IO, Any
 
 
 class ProfileBusyError(RuntimeError):
-    pass
+    """Raised when a persistent browser profile is already used by another job."""
 
 
 class ProfileLock:
-    """Cross-process lock for a Playwright persistent profile directory."""
+    """Cross-process exclusive lock for a Playwright persistent profile directory."""
 
     def __init__(
         self,
@@ -24,7 +24,7 @@ class ProfileLock:
         timeout_seconds: float = 0.0,
         poll_seconds: float = 0.25,
         job_id: str = "",
-    ):
+    ) -> None:
         self.profile_dir = Path(profile_dir).expanduser().resolve()
         self.lock_root = Path(lock_root).expanduser().resolve()
         digest = hashlib.sha256(str(self.profile_dir).casefold().encode("utf-8")).hexdigest()[:24]
@@ -121,6 +121,7 @@ class ProfileLock:
             file.seek(0)
             msvcrt.locking(file.fileno(), msvcrt.LK_NBLCK, 1)
             return
+
         import fcntl
 
         fcntl.flock(file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -133,6 +134,7 @@ class ProfileLock:
             file.seek(0)
             msvcrt.locking(file.fileno(), msvcrt.LK_UNLCK, 1)
             return
+
         import fcntl
 
         fcntl.flock(file.fileno(), fcntl.LOCK_UN)
