@@ -27,6 +27,8 @@ class ReliableTaskLogService(TaskLogService):
         "template_send_mode": "",
         "source_chat_id": 0,
         "source_message_ids": [],
+        "target_chat_username": "",
+        "target_chat_title": "",
     }
 
     def append_result(self, result) -> None:
@@ -42,7 +44,7 @@ class ReliableTaskLogService(TaskLogService):
                 record = {"status": "unknown", "error": str(result)}
             if hasattr(result, "__dict__"):
                 record.update(vars(result))
-            record["log_schema_version"] = 3
+            record["log_schema_version"] = 4
             self.append_record(record)
         except Exception as exc:
             self._log("error", f"写入详细任务发送结果失败: {exc}")

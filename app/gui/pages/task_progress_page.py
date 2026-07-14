@@ -29,6 +29,7 @@ class TaskProgressPage(QWidget):
         "not_participant": "未加入群组",
         "unavailable": "群组不可访问",
         "invalid_target": "目标无效",
+        "entity_unresolved": "群实体未解析",
         "telegram_busy": "Telegram繁忙",
         "skipped": "跳过",
         "failed": "失败",
@@ -52,7 +53,8 @@ class TaskProgressPage(QWidget):
         self.status_filter.addItem("全部结果", "")
         for status in (
             "success", "flood_wait", "blocked", "not_participant",
-            "unavailable", "invalid_target", "telegram_busy", "skipped", "failed",
+            "unavailable", "invalid_target", "entity_unresolved", "telegram_busy",
+            "skipped", "failed",
         ):
             self.status_filter.addItem(self.STATUS_LABELS[status], status)
 
@@ -185,7 +187,8 @@ class TaskProgressPage(QWidget):
         parts = [f"当前显示 {len(self._records)} 条"]
         for status in (
             "success", "flood_wait", "blocked", "not_participant",
-            "unavailable", "invalid_target", "telegram_busy", "skipped", "failed",
+            "unavailable", "invalid_target", "entity_unresolved", "telegram_busy",
+            "skipped", "failed",
         ):
             if counts.get(status):
                 parts.append(f"{self.STATUS_LABELS[status]} {counts[status]}")

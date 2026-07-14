@@ -8,15 +8,20 @@ from uuid import uuid4
 
 from app.core.models import SEND_DECISION_AD, SEND_DECISION_NOISE, SEND_DECISION_SKIP
 from app.services.group_send_service import GroupSendService, SendResult
+from app.services.telegram_entity_resolver import TelegramEntityResolver
 
 
 class ReliableGroupSendService(GroupSendService):
-    """Adds exact probability audit data and detailed result classification."""
+    """Adds exact probability audit data, entity recovery and result classification."""
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._decision_details: ContextVar[dict[str, Any] | None] = ContextVar(
             "wqtg_send_decision_details",
+            default=None,
+        )
+        self._active_group: ContextVar[Any | None] = ContextVar(
+            "wqtg_active_send_group",
             default=None,
         )
 
@@ -55,18 +60,110 @@ class ReliableGroupSendService(GroupSendService):
         return decision
 
     async def execute_task(self, *args, **kwargs) -> SendResult:
-        token = self._decision_details.set(None)
+        group = kwargs.get("group")
+        if group is None and len(args) >= 3:
+            group = args[2]
+        group_token = self._active_group.set(group)
+        decision_token = self._decision_details.set(None)
         try:
             result = await super().execute_task(*args, **kwargs)
             self._enrich_result(result, self._decision_details.get())
             return result
         finally:
-            self._decision_details.reset(token)
+            self._decision_details.reset(decision_token)
+            self._active_group.reset(group_token)
+
+    def _current_group_metadata(self, chat_id: int) -> tuple[str, str]:
+        group = self._active_group.get()
+        if group is None:
+            return "", ""
+        group_chat_id = self._safe_int(getattr(group, "chat_id", 0), 0)
+        if group_chat_id and group_chat_id != self._safe_int(chat_id, 0):
+            return "", ""
+        return (
+            str(getattr(group, "username", "") or "").strip(),
+            str(getattr(group, "group_name", "") or "").strip(),
+        )
+
+    async def send_text_to_chat(
+        self,
+        account_name: str,
+        client,
+        chat_id: int,
+        text: str,
+    ) -> bool:
+        safe_text = str(text or "").strip()
+        if not safe_text:
+            self._log("warning", f"[{account_name}] 文本消息为空，已跳过 | chat_id={chat_id}")
+            return False
+        if not chat_id:
+            self._log("warning", f"[{account_name}] 目标 Chat ID 为空，已跳过文本发送")
+            return False
+
+        username, title = self._current_group_metadata(chat_id)
+        resolved = await TelegramEntityResolver(log_func=self._log).resolve(
+            account_name,
+            client,
+            chat_id=chat_id,
+            username=username,
+            title=title,
+            role="目标群",
+        )
+        self._log(
+            "info",
+            f"[{account_name}] 文本目标群实体解析完成 | strategy={resolved.strategy} | "
+            f"chat_id={chat_id} | username={username or '-'}",
+        )
+        await client.send_message(resolved.peer, safe_text)
+        return True
+
+    async def send_template_to_chat(
+        self,
+        account_name: str,
+        client,
+        chat_id: int,
+        template_id: str,
+    ) -> bool:
+        safe_template_id = str(template_id or "").strip()
+        if not safe_template_id:
+            self._log(
+                "warning",
+                f"[{account_name}] 模板 ID 为空，已跳过 | chat_id={chat_id}",
+            )
+            return False
+        if not self._template_exists_and_enabled(safe_template_id):
+            self._log(
+                "warning",
+                f"[{account_name}] 模板不存在或未启用，已跳过 | "
+                f"template_id={safe_template_id} | chat_id={chat_id}",
+            )
+            return False
+        if not chat_id:
+            self._log(
+                "warning",
+                f"[{account_name}] 目标 Chat ID 为空，已跳过模板发送 | "
+                f"template_id={safe_template_id}",
+            )
+            return False
+
+        username, title = self._current_group_metadata(chat_id)
+        return await self.template_sender.send_template_to_chat(
+            account_name=account_name,
+            client=client,
+            template_id=safe_template_id,
+            target_chat_id=chat_id,
+            target_chat_username=username,
+            target_chat_title=title,
+        )
 
     def _enrich_result(self, result: SendResult, decision_details: dict[str, Any] | None) -> None:
         setattr(result, "attempt_id", uuid4().hex)
         for key, value in dict(decision_details or {}).items():
             setattr(result, key, value)
+
+        group = self._active_group.get()
+        setattr(result, "target_chat_username", str(getattr(group, "username", "") or ""))
+        setattr(result, "target_chat_title", str(getattr(group, "group_name", "") or ""))
 
         template_id = str(getattr(result, "selected_template_id", "") or "").strip()
         template = self.template_sender.get_template(template_id) if template_id else None
@@ -106,6 +203,11 @@ class ReliableGroupSendService(GroupSendService):
         elif status == "skipped":
             category = "skipped"
             error_type = "Skipped"
+            setattr(result, "retry_after_seconds", 0)
+            setattr(result, "cooldown_until", "")
+        elif "ENTITY_UNRESOLVED" in error:
+            status = category = "entity_unresolved"
+            error_type = "InputEntityNotFound"
             setattr(result, "retry_after_seconds", 0)
             setattr(result, "cooldown_until", "")
         elif "WorkerBusyTooLongRetryError" in error or "Telegram工作节点繁忙" in error or "workers are too busy" in error.lower():
