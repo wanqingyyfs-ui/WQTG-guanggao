@@ -14,7 +14,12 @@ from app.core.reliable_telegram_client_manager import ReliableTelegramClientMana
 
 
 class StrictStaticTelegramClientManager(ReliableTelegramClientManager):
-    """Fail-closed Telegram manager that requires one unique static proxy per account."""
+    """Fail-closed Telegram manager that requires a static proxy for every account.
+
+    Multiple accounts may intentionally share the same static proxy or exit IP.
+    The manager only verifies that the configured proxy is valid and reachable;
+    it never falls back to a direct connection.
+    """
 
     IP_CHECK_URLS = (
         "https://api.ipify.org?format=json",
@@ -23,7 +28,6 @@ class StrictStaticTelegramClientManager(ReliableTelegramClientManager):
 
     def __init__(self, *args, **kwargs) -> None:
         self._verified_proxy_exits: dict[tuple[Any, ...], str] = {}
-        self._exit_ip_owner: dict[str, str] = {}
         self._proxy_verify_lock = threading.RLock()
         super().__init__(*args, **kwargs)
 
@@ -31,7 +35,6 @@ class StrictStaticTelegramClientManager(ReliableTelegramClientManager):
         super().update_configuration(*args, **kwargs)
         with self._proxy_verify_lock:
             self._verified_proxy_exits.clear()
-            self._exit_ip_owner.clear()
 
     def _normalize_account_group_proxies(
         self,
@@ -95,32 +98,7 @@ class StrictStaticTelegramClientManager(ReliableTelegramClientManager):
 
     def _validate_account_identity(self, account: AccountConfig) -> None:
         super()._validate_account_identity(account)
-        account_name = str(getattr(account, "account_name", "") or "").strip()
-        current_proxy = self._require_static_proxy_for_account(account)
-        current_identity = proxy_identity(current_proxy)
-
-        duplicate_accounts: list[str] = []
-        for other in self.accounts.values():
-            other_name = str(getattr(other, "account_name", "") or "").strip()
-            if not other_name or other_name == account_name:
-                continue
-            if not bool(getattr(other, "enabled", True)):
-                continue
-            try:
-                other_identity = proxy_identity(
-                    self._require_static_proxy_for_account(other)
-                )
-            except RuntimeError:
-                continue
-            if other_identity == current_identity:
-                duplicate_accounts.append(other_name)
-
-        if duplicate_accounts:
-            raise RuntimeError(
-                "静态代理重复，禁止启动："
-                f"账号【{account_name}】与账号【{'、'.join(duplicate_accounts)}】"
-                "使用同一个静态代理。请为每个启用账号配置不同的静态代理。"
-            )
+        self._require_static_proxy_for_account(account)
 
     def validate_enabled_account_identities(self) -> None:
         errors: list[str] = []
@@ -179,13 +157,6 @@ class StrictStaticTelegramClientManager(ReliableTelegramClientManager):
         with self._proxy_verify_lock:
             cached = self._verified_proxy_exits.get(identity)
             if cached:
-                owner = self._exit_ip_owner.get(cached)
-                if owner and owner != account_name:
-                    raise RuntimeError(
-                        f"静态代理出口 IP 重复：账号【{account_name}】与账号【{owner}】"
-                        f"当前都使用出口 {cached}，已禁止连接"
-                    )
-                self._exit_ip_owner[cached] = account_name
                 return cached
 
         last_error = ""
@@ -208,14 +179,7 @@ class StrictStaticTelegramClientManager(ReliableTelegramClientManager):
             )
 
         with self._proxy_verify_lock:
-            owner = self._exit_ip_owner.get(exit_ip)
-            if owner and owner != account_name:
-                raise RuntimeError(
-                    f"静态代理出口 IP 重复：账号【{account_name}】与账号【{owner}】"
-                    f"当前都使用出口 {exit_ip}，已禁止连接"
-                )
             self._verified_proxy_exits[identity] = exit_ip
-            self._exit_ip_owner[exit_ip] = account_name
         return exit_ip
 
     async def _get_or_create_client(self, account: AccountConfig) -> TelegramClient:
