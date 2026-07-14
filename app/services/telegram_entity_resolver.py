@@ -5,7 +5,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from telethon import utils
-from telethon.errors import ChannelPrivateError, UserNotParticipantError
+from telethon.errors import ChannelPrivateError, FloodWaitError, UserNotParticipantError
 
 
 class EntityResolutionError(ValueError):
@@ -62,7 +62,10 @@ class TelegramEntityResolver:
         candidates: list[Any] = []
         normalized_username = cls._normalize_username(username)
         if normalized_username:
-            for value in (normalized_username, f"@{normalized_username}"):
+            username_values = [normalized_username]
+            if "://" not in normalized_username:
+                username_values.append(f"@{normalized_username}")
+            for value in username_values:
                 if value not in candidates:
                     candidates.append(value)
         safe_chat_id = cls._safe_int(chat_id)
@@ -110,7 +113,7 @@ class TelegramEntityResolver:
                 requested_chat_id=self._safe_int(chat_id),
                 requested_username=str(username or "").strip(),
             )
-        except (ChannelPrivateError, UserNotParticipantError):
+        except (ChannelPrivateError, FloodWaitError, UserNotParticipantError):
             raise
         except Exception:
             return None
@@ -131,6 +134,8 @@ class TelegramEntityResolver:
 
         try:
             append_items(await client.get_dialogs(limit=None))
+        except FloodWaitError:
+            raise
         except TypeError:
             append_items(await client.get_dialogs())
         except Exception:
@@ -138,6 +143,8 @@ class TelegramEntityResolver:
 
         try:
             append_items(await client.get_dialogs(limit=None, archived=True))
+        except FloodWaitError:
+            raise
         except (TypeError, AttributeError):
             pass
         except Exception:
@@ -192,7 +199,7 @@ class TelegramEntityResolver:
                 if resolved is not None:
                     return resolved
 
-        if normalized_username:
+        if normalized_username and "://" not in normalized_username:
             for dialog in dialogs:
                 entity = self._dialog_entity(dialog)
                 if self._entity_username(entity).casefold() == normalized_username.casefold():
@@ -227,7 +234,7 @@ class TelegramEntityResolver:
                     requested_chat_id=safe_chat_id,
                     requested_username=safe_username,
                 )
-            except (ChannelPrivateError, UserNotParticipantError):
+            except (ChannelPrivateError, FloodWaitError, UserNotParticipantError):
                 raise
             except Exception:
                 pass
