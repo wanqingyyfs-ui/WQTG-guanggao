@@ -26,7 +26,37 @@ class TgapipldcLocatorService:
         self.workspace.ensure_structure()
         self.src_dir = self.workspace.src_dir
         self.config_path = self.workspace.data_dir / self.CONFIG_FILE_NAME
+        self._install_task_progress_page_if_available()
         self._install_profile_behavior_manager_if_available()
+
+    def _install_task_progress_page_if_available(self) -> None:
+        try:
+            from PySide6.QtWidgets import QApplication
+            from app.gui.pages.task_progress_page import TaskProgressPage
+
+            application = QApplication.instance()
+            if application is None:
+                return
+            window = next((
+                widget for widget in application.topLevelWidgets()
+                if hasattr(widget, "runtime_service") and hasattr(widget, "tabs")
+            ), None)
+            if window is None or hasattr(window, "task_progress_page"):
+                return
+            page = TaskProgressPage(window.runtime_service.task_log_service, parent=window)
+            insert_index = window.tabs.count()
+            for index in range(window.tabs.count()):
+                if window.tabs.tabText(index) == "API 批量工作台":
+                    insert_index = index
+                    break
+            window.tabs.insertTab(insert_index, page, "任务进度")
+            window.task_progress_page = page
+        except Exception as exc:
+            try:
+                if 'window' in locals() and window is not None:
+                    window.runtime_service._emit_log("warning", f"任务进度页面加载失败：{exc}")
+            except Exception:
+                pass
 
     def _behavior_service(self):
         from app.services.tgapipldc_behavior_service_v2 import TgapipldcBehaviorService
