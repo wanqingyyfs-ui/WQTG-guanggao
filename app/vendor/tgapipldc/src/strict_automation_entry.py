@@ -51,6 +51,35 @@ def _set_active_proxy(account: dict):
 
 def install_login_adapter(module):
     _patch_yanzheng_fetch(module)
+    original_read = module.read_account_proxy_map
+
+    def strict_read_account_proxy_map():
+        rows = original_read()
+        phone_owner: dict[str, str] = {}
+        profile_owner: dict[str, str] = {}
+        for row in rows:
+            phone = str(row.get("phone") or "").strip()
+            profile_dir = str(row.get("profile_dir") or "").replace("\\", "/").strip("/")
+            if not profile_dir:
+                raise RuntimeError(f"账号【{phone}】缺少独立 Profile 目录")
+            previous_phone = profile_owner.get(profile_dir)
+            if previous_phone and previous_phone != phone:
+                raise RuntimeError(
+                    f"Profile 目录重复：账号【{phone}】与账号【{previous_phone}】"
+                    f"共用 {profile_dir}，已阻止 API 获取"
+                )
+            profile_owner[profile_dir] = phone
+            digits = "".join(character for character in phone if character.isdigit())
+            if digits:
+                previous_profile = phone_owner.get(digits)
+                if previous_profile and previous_profile != profile_dir:
+                    raise RuntimeError(
+                        f"手机号【{phone}】被配置到多个 Profile，已阻止 API 获取"
+                    )
+                phone_owner[digits] = profile_dir
+        return rows
+
+    module.read_account_proxy_map = strict_read_account_proxy_map
     state = original_install_login_adapter(module)
     original_open = module.open_telegram_web_for_login
 
