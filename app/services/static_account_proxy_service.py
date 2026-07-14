@@ -158,7 +158,6 @@ class StaticAccountProxyService:
         group_proxies: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         proxies = group_proxies if group_proxies is not None else self.load_group_proxies_strict()
-        identity_owner: dict[tuple[Any, ...], str] = {}
         session_owner: dict[str, str] = {}
         phone_owner: dict[str, str] = {}
         errors: list[str] = []
@@ -168,15 +167,8 @@ class StaticAccountProxyService:
                 continue
             name = str(getattr(account, "account_name", "") or "").strip()
             try:
-                config = self.proxy_for_account(account, proxies)
-                identity = proxy_identity(config)
-                owner = identity_owner.get(identity)
-                if owner and owner != name:
-                    errors.append(
-                        f"账号【{name}】与账号【{owner}】使用同一个静态代理"
-                    )
-                else:
-                    identity_owner[identity] = name
+                # Multiple accounts may intentionally share one static proxy.
+                self.proxy_for_account(account, proxies)
             except Exception as exc:
                 errors.append(str(exc))
 
@@ -202,46 +194,42 @@ class StaticAccountProxyService:
                 + "\n- ".join(dict.fromkeys(errors))
             )
 
-    def verify_unique_exit_ips(
+    def verify_exit_ips(
         self,
         accounts: Iterable[AccountConfig],
         group_proxies: dict[str, dict[str, Any]] | None = None,
     ) -> dict[str, str]:
         proxies = group_proxies if group_proxies is not None else self.load_group_proxies_strict()
-        exit_owner: dict[str, str] = {}
+        exit_cache: dict[tuple[Any, ...], str] = {}
         result: dict[str, str] = {}
         for account in accounts:
             if not bool(getattr(account, "enabled", True)):
                 continue
             name = str(getattr(account, "account_name", "") or "").strip()
             config = self.proxy_for_account(account, proxies)
-            request_proxies = {
-                "http": self._proxy_url(config, for_requests=True),
-                "https": self._proxy_url(config, for_requests=True),
-            }
-            last_error = ""
-            exit_ip = ""
-            for url in ("https://api.ipify.org?format=json", "https://ipinfo.io/json"):
-                try:
-                    response = requests.get(url, proxies=request_proxies, timeout=20)
-                    response.raise_for_status()
-                    exit_ip = str(response.json().get("ip") or "").strip()
-                    if exit_ip:
-                        break
-                    last_error = f"{url} 返回中没有 ip 字段"
-                except Exception as exc:
-                    last_error = str(exc)
+            identity = proxy_identity(config)
+            exit_ip = exit_cache.get(identity, "")
             if not exit_ip:
-                raise RuntimeError(
-                    f"账号【{name}】静态代理出口检测失败，已阻止继续：{last_error}"
-                )
-            owner = exit_owner.get(exit_ip)
-            if owner and owner != name:
-                raise RuntimeError(
-                    f"静态代理实际出口重复：账号【{name}】与账号【{owner}】"
-                    f"都使用出口 {exit_ip}，已阻止继续"
-                )
-            exit_owner[exit_ip] = name
+                request_proxies = {
+                    "http": self._proxy_url(config, for_requests=True),
+                    "https": self._proxy_url(config, for_requests=True),
+                }
+                last_error = ""
+                for url in ("https://api.ipify.org?format=json", "https://ipinfo.io/json"):
+                    try:
+                        response = requests.get(url, proxies=request_proxies, timeout=20)
+                        response.raise_for_status()
+                        exit_ip = str(response.json().get("ip") or "").strip()
+                        if exit_ip:
+                            break
+                        last_error = f"{url} 返回中没有 ip 字段"
+                    except Exception as exc:
+                        last_error = str(exc)
+                if not exit_ip:
+                    raise RuntimeError(
+                        f"账号【{name}】静态代理出口检测失败，已阻止继续：{last_error}"
+                    )
+                exit_cache[identity] = exit_ip
             result[name] = exit_ip
         return result
 
@@ -253,7 +241,7 @@ class StaticAccountProxyService:
         account_list = list(accounts)
         proxies = group_proxies if group_proxies is not None else self.load_group_proxies_strict()
         self.validate_enabled_accounts(account_list, proxies)
-        verified_exit_ips = self.verify_unique_exit_ips(account_list, proxies)
+        verified_exit_ips = self.verify_exit_ips(account_list, proxies)
         metadata_index = self._metadata_index()
 
         rows: list[dict[str, str]] = []
