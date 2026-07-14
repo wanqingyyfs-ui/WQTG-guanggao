@@ -3,6 +3,7 @@ from __future__ import annotations
 from telethon.errors import FloodWaitError
 
 from app.core.models import TemplateConfig
+from app.services.telegram_entity_resolver import TelegramEntityResolver
 from app.services.template_service import TemplateSender
 
 try:
@@ -13,7 +14,7 @@ except ImportError:  # pragma: no cover - compatibility with older Telethon
 
 
 class ReliableTemplateSender(TemplateSender):
-    """Forward templates while preserving the original Telegram exception."""
+    """Forward templates while preserving Telegram exceptions and resolving peers safely."""
 
     async def send_template_to_chat(
         self,
@@ -21,6 +22,8 @@ class ReliableTemplateSender(TemplateSender):
         client,
         template_id: str,
         target_chat_id: int,
+        target_chat_username: str = "",
+        target_chat_title: str = "",
     ) -> bool:
         safe_template_id = str(template_id or "").strip()
         template = self.get_template(safe_template_id)
@@ -38,10 +41,28 @@ class ReliableTemplateSender(TemplateSender):
                 f"模板配置无效或未启用：template_id={safe_template_id}"
             )
 
-        # Resolve peers without swallowing Telegram exceptions, so the task result
-        # can distinguish private/inaccessible/invalid peers from generic failures.
-        target_peer = await client.get_input_entity(target_chat_id)
-        source_peer = await client.get_input_entity(template.source_chat_id)
+        resolver = TelegramEntityResolver(log_func=self._log)
+        target = await resolver.resolve(
+            account_name,
+            client,
+            chat_id=target_chat_id,
+            username=target_chat_username,
+            title=target_chat_title,
+            role="目标群",
+        )
+        source = await resolver.resolve(
+            account_name,
+            client,
+            chat_id=template.source_chat_id,
+            title=template.source_chat_title,
+            role="模板来源群",
+        )
+        self._log(
+            "info",
+            f"[{account_name}] 模板转发实体解析完成 | "
+            f"target_strategy={target.strategy} | source_strategy={source.strategy} | "
+            f"target_chat_id={target_chat_id} | source_chat_id={template.source_chat_id}",
+        )
 
         # The grouped runtime intentionally uses Telegram ForwardMessagesRequest.
         # It does not silently switch to clone/text mode after an error.
@@ -49,8 +70,8 @@ class ReliableTemplateSender(TemplateSender):
             account_name=account_name,
             client=client,
             template=template,
-            source_peer=source_peer,
-            target_peer=target_peer,
+            source_peer=source.peer,
+            target_peer=target.peer,
             target_chat_id=target_chat_id,
             source_message_ids=source_message_ids,
         )
