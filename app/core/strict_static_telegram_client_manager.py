@@ -135,6 +135,23 @@ class StrictStaticTelegramClientManager(ReliableTelegramClientManager):
             unique_errors = list(dict.fromkeys(errors))
             raise RuntimeError("启用账号静态代理安全检查失败：\n- " + "\n- ".join(unique_errors))
 
+        exit_errors: list[str] = []
+        for account in self.accounts.values():
+            if not bool(getattr(account, "enabled", True)):
+                continue
+            try:
+                self._verify_static_exit_ip(
+                    account,
+                    self._require_static_proxy_for_account(account),
+                )
+            except Exception as exc:
+                exit_errors.append(str(exc))
+        if exit_errors:
+            raise RuntimeError(
+                "启用账号静态代理出口检查失败：\n- "
+                + "\n- ".join(dict.fromkeys(exit_errors))
+            )
+
     @staticmethod
     def _requests_proxies(config: dict[str, Any]) -> dict[str, str]:
         data = normalize_proxy_config(config, strict=True)
