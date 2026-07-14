@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import atexit
 import contextvars
 import os
 from pathlib import Path
@@ -7,6 +8,7 @@ from pathlib import Path
 import requests
 
 import automation_entry as base
+from authenticated_proxy_bridge import prepare_playwright_proxy
 from automation_adapter import (
     install_login_adapter as original_install_login_adapter,
     install_profile_adapter as original_install_profile_adapter,
@@ -146,19 +148,33 @@ def _open_calibration_browser_strict(
     proxy_text = str(raw_proxy or "").strip()
     if not proxy_text:
         raise RuntimeError("定位校准缺少静态代理，禁止直连")
-    parsed_proxy = parse_raw_proxy(proxy_text)
-    context = playwright.chromium.launch_persistent_context(
-        user_data_dir=str(profile_path),
-        headless=False,
-        viewport=viewport,
-        proxy=parsed_proxy.playwright_proxy,
-        args=[
-            "--disable-quic",
-            "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
-        ],
-    )
+
+    context = None
+    prepared_proxy = None
     succeeded = False
     try:
+        parsed_proxy = parse_raw_proxy(proxy_text)
+        prepared_proxy = prepare_playwright_proxy(parsed_proxy)
+        if prepared_proxy.bridge is not None:
+            print(
+                "检测到带认证 SOCKS5，已启用本地安全桥接；浏览器流量仍全部经过分组静态代理。",
+                flush=True,
+            )
+            atexit.register(prepared_proxy.stop)
+
+        context = playwright.chromium.launch_persistent_context(
+            user_data_dir=str(profile_path),
+            headless=False,
+            viewport=viewport,
+            proxy=prepared_proxy.proxy,
+            args=[
+                "--disable-quic",
+                "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+            ],
+        )
+        if prepared_proxy.bridge is not None:
+            context.on("close", lambda *_args: prepared_proxy.stop())
+
         installer = base._configure_calibration_context(context, target_id, save_locator)
         page = context.pages[0] if context.pages else context.new_page()
         target_url = url or "https://web.telegram.org/k/"
@@ -177,10 +193,13 @@ def _open_calibration_browser_strict(
         ) from exc
     finally:
         if not succeeded:
-            try:
-                context.close()
-            except Exception:
-                pass
+            if context is not None:
+                try:
+                    context.close()
+                except Exception:
+                    pass
+            if prepared_proxy is not None:
+                prepared_proxy.stop()
 
 
 base.install_login_adapter = install_login_adapter
