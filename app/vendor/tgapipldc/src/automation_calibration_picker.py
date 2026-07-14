@@ -4,7 +4,7 @@ import json, os, time
 from pathlib import Path
 from typing import Any, Callable
 
-PICKER_VERSION = "2026-07-14.4"
+PICKER_VERSION = "2026-07-14.5"
 PICKER_PANEL_ID = "__wqtg_locator_panel"
 MODE_STRATEGIES = LOCATOR_MODE_STRATEGIES = "strategies"
 MODE_ABSOLUTE = LOCATOR_MODE_ABSOLUTE = "absolute_position"
@@ -26,7 +26,7 @@ def calibration_picker_script(target_id: str, initial_mode: str = MODE_STRATEGIE
     script = r"""
 (()=>{
  // Compatibility markers retained for older tests: event.key==='F8'; event.key === 'F8'
- const TARGET=__TARGET__,VERSION=__VERSION__,PANEL_ID=__PANEL__,STRATEGIES='strategies',ABSOLUTE='absolute_position',ACTIONABLE="button,a,input,textarea,select,label,[role='button'],[role='menuitem'],[role='link'],[tabindex]";
+ const TARGET=__TARGET__,VERSION=__VERSION__,PANEL_ID=__PANEL__,STRATEGIES='strategies',ABSOLUTE='absolute_position',ACTIONABLE="button,a,input,textarea,select,label,[role='button'],[role='menuitem'],[role='link'],[tabindex],[data-menu-id],[data-action],[onclick],.btn-menu-item";
  const old=window.__wqtgLocatorPicker;if(old&&typeof old.destroy==='function'){try{old.destroy()}catch(_){}}
  let mode=__MODE__,armed=false,saving=false,last=0,panel,status,selector,button,marker,observer;
  const stop=e=>{if(!e)return;if(e.cancelable)e.preventDefault();e.stopPropagation();if(e.stopImmediatePropagation)e.stopImmediatePropagation()};
@@ -47,7 +47,7 @@ def calibration_picker_script(target_id: str, initial_mode: str = MODE_STRATEGIE
  const element=e=>{const path=typeof e.composedPath==='function'?e.composedPath():[];for(const n of path){if(!n||n.nodeType!==1)continue;const x=n.matches&&n.matches(ACTIONABLE)?n:(n.closest?n.closest(ACTIONABLE):null);if(x&&!x.closest(`#${PANEL_ID}`))return x}const raw=e.target&&e.target.nodeType===1?e.target:null;return raw&&raw.closest?raw.closest(ACTIONABLE):null};
  const mark=(x,y,ok)=>{if(marker&&marker.isConnected)marker.remove();marker=document.createElement('div');marker.dataset.wqtgLocatorUi='1';Object.assign(marker.style,{position:'fixed',left:`${x}px`,top:`${y}px`,width:'18px',height:'18px',marginLeft:'-9px',marginTop:'-9px',border:`3px solid ${ok?'#ff3366':'#ffb020'}`,borderRadius:'50%',boxSizing:'border-box',zIndex:'2147483646',pointerEvents:'none',boxShadow:'0 0 0 2px rgba(255,255,255,.9)'});(document.body||document.documentElement).appendChild(marker)};
  const capture=async e=>{
-  if(!(armed||(e.ctrlKey&&e.shiftKey))||inside(e))return;stop(e);const now=Date.now();if(saving||now-last<600)return;const el=element(e);if(mode===STRATEGIES&&!el){render('Strategies 模式未识别到可点击元素，请点击按钮本体后重试',false,true);return}
+  if(!(armed||(e.ctrlKey&&e.shiftKey))||inside(e))return;stop(e);const now=Date.now();if(saving||now-last<600)return;const el=element(e);if(mode===STRATEGIES&&!el){render('Strategies 模式未识别到可点击元素，请点击按钮或浮动菜单项本体后重试',false,true);return}
   saving=true;last=now;const x=Number(e.clientX||0),y=Number(e.clientY||0);if(mode===ABSOLUTE)mark(x,y,false);else el.style.setProperty('outline','3px dashed #ffb020','important');render(`正在保存 ${label()} 定位目标…`);
   const rect=el?el.getBoundingClientRect():null,attrs={};if(el)for(const name of ['aria-label','title','name','data-testid','placeholder','role']){const value=el.getAttribute(name);if(value)attrs[name]=value}
   const payload={targetId:TARGET,locatorMode:mode,tag:el?el.tagName.toLowerCase():'point',id:el?(el.id||''):'',className:el&&typeof el.className==='string'?el.className:'',text:el?(el.innerText||el.textContent||'').trim().slice(0,200):'',attrs,x,y,viewportWidth:Math.max(1,innerWidth),viewportHeight:Math.max(1,innerHeight),xRatio:rect?(rect.left+rect.width/2)/Math.max(1,innerWidth):x/Math.max(1,innerWidth),yRatio:rect?(rect.top+rect.height/2)/Math.max(1,innerHeight):y/Math.max(1,innerHeight),url:location.href};
