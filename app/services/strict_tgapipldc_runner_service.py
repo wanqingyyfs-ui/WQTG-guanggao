@@ -17,6 +17,7 @@ class StrictTgapipldcRunnerService(CancelSafeTgapipldcRunnerService):
     """Use dynamic proxy only for API export and static mappings everywhere else."""
 
     SCRIPT_STRICT_AUTOMATION_ENTRY = "strict_automation_entry.py"
+    SCRIPT_STRICT_OPEN_ACCOUNT_BROWSER = "strict_open_account_browser.py"
 
     def __init__(
         self,
@@ -68,6 +69,24 @@ class StrictTgapipldcRunnerService(CancelSafeTgapipldcRunnerService):
             extra_args=["--mode", "login"],
             job_type="api-export",
             extra_env={"WQTG_PROXY_POLICY": "dynamic_api_only"},
+        )
+
+    def run_open_account_browser(self, log_callback=None) -> TgapipldcCommandResult:
+        if self.profile_map_builder is None:
+            raise RuntimeError("缺少静态代理运行表生成器，已阻止账号浏览器直连")
+        static_map = Path(self.profile_map_builder()).resolve()
+        if not static_map.exists():
+            raise RuntimeError(f"静态代理运行表不存在：{static_map}")
+        return self._run_with_env(
+            script_name=self.SCRIPT_STRICT_OPEN_ACCOUNT_BROWSER,
+            command_name="打开账号浏览器",
+            log_callback=log_callback,
+            extra_args=[],
+            job_type="open-browser",
+            extra_env={
+                "WQTG_PROXY_POLICY": "static_group_only",
+                "WQTG_ACCOUNT_PROXY_MAP_OVERRIDE": str(static_map),
+            },
         )
 
     def run_profile_maintenance(self, action: str, log_callback=None) -> TgapipldcCommandResult:
