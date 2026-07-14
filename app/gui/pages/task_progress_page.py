@@ -97,133 +97,177 @@ class TaskProgressPage(QWidget):
         self.refresh_records(force=True)
 
     def _build_ui(self) -> None:
-        controls = QHBoxLayout()
-        controls.addWidget(QLabel("结果筛选"))
-        controls.addWidget(self.status_filter)
-        controls.addWidget(self.limit_combo)
-        controls.addStretch(1)
-        controls.addWidget(self.refresh_button)
-        controls.addWidget(self.clear_button)
+        title = QLabel("任务进度与逐条结果")
+        title.setObjectName("PageTitleLabel")
+
+        tools = QHBoxLayout()
+        tools.setContentsMargins(0, 0, 0, 0)
+        tools.setSpacing(10)
+        tools.addWidget(QLabel("结果筛选："))
+        tools.addWidget(self.status_filter)
+        tools.addWidget(self.limit_combo)
+        tools.addWidget(self.refresh_button)
+        tools.addStretch(1)
+        tools.addWidget(self.clear_button)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(8)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
+        layout.addWidget(title)
         layout.addWidget(self.summary_label)
         layout.addWidget(self.cooldown_label)
-        layout.addLayout(controls)
+        layout.addLayout(tools)
         layout.addWidget(self.table, 1)
-        layout.addWidget(QLabel("完整记录"))
+        layout.addWidget(QLabel("所选记录完整详情："))
         layout.addWidget(self.detail_text)
 
-    @staticmethod
-    def _safe_int(value, default=0) -> int:
-        try:
-            return int(value)
-        except (TypeError, ValueError):
-            return default
-
-    @staticmethod
-    def _short_text(value, limit: int = 140) -> str:
-        text = str(value or "").replace("\r", " ").replace("\n", " ").strip()
-        return text if len(text) <= limit else text[: limit - 3] + "..."
-
     def refresh_records(self, force: bool = False) -> None:
-        limit = int(self.limit_combo.currentData() or 1000)
-        records = list(self.task_log_service.read_recent_records(limit))
-        signature = (
-            len(records),
-            str(records[-1].get("logged_at") or records[-1].get("finished_at") or "") if records else "",
-            str(self.status_filter.currentData() or ""),
-            limit,
-        )
+        log_file = Path(self.task_log_service.get_log_file())
+        try:
+            stat = log_file.stat() if log_file.exists() else None
+            signature = (
+                stat.st_mtime_ns if stat else 0,
+                stat.st_size if stat else 0,
+                self.status_filter.currentData(),
+                self.limit_combo.currentData(),
+            )
+        except OSError:
+            signature = None
         if not force and signature == self._last_signature:
             self._refresh_cooldown_label()
             return
         self._last_signature = signature
 
+        selected_attempt = self._selected_attempt_id()
+        limit = int(self.limit_combo.currentData() or 1000)
+        records = list(self.task_log_service.read_recent_records(limit))
+        records.reverse()
         status_filter = str(self.status_filter.currentData() or "")
-        filtered = [
-            record for record in reversed(records)
-            if not status_filter or str(record.get("status") or "unknown") == status_filter
-        ]
-        self._records = filtered
-        self.table.setRowCount(len(filtered))
+        if status_filter:
+            records = [r for r in records if str(r.get("status") or "") == status_filter]
+        self._records = records
+        self._populate_table()
+        self._update_summary()
+        self._refresh_cooldown_label()
+        self._restore_selection(selected_attempt)
 
-        counts: dict[str, int] = {}
-        for record in records:
-            status = str(record.get("status") or "unknown")
-            counts[status] = counts.get(status, 0) + 1
-        count_text = "，".join(
-            f"{self.STATUS_LABELS.get(key, key)} {value}"
-            for key, value in sorted(counts.items())
-        ) or "尚无任务记录"
-        self.summary_label.setText(f"最近 {len(records)} 条：{count_text}")
-
-        for row, record in enumerate(filtered):
-            decision = str(record.get("decision") or "")
-            roll = record.get("probability_roll", "")
-            probability_text = self.DECISION_LABELS.get(decision, decision or "-")
-            if roll not in (None, "", -1, -1.0):
-                probability_text += f" / {roll}"
+    def _populate_table(self) -> None:
+        self.table.setSortingEnabled(False)
+        self.table.setRowCount(len(self._records))
+        for row, record in enumerate(self._records):
+            probability = self._probability_label(record)
             values = [
-                record.get("logged_at") or "",
-                record.get("task_name") or record.get("task_id") or "",
-                record.get("account_name") or "",
-                record.get("selected_group_name") or record.get("group_id") or "",
-                record.get("chat_id") or "",
-                probability_text,
-                record.get("message_mode") or "",
-                record.get("template_name") or record.get("selected_template_id") or "",
-                self.STATUS_LABELS.get(str(record.get("status") or "unknown"), str(record.get("status") or "unknown")),
-                record.get("flood_wait_seconds") or "",
-                record.get("cooldown_until") or "",
-                record.get("reason_detail") or record.get("error") or record.get("skip_reason") or "",
-                record.get("finished_at") or "",
+                record.get("logged_at", ""),
+                record.get("task_name", ""),
+                record.get("account_name", ""),
+                record.get("selected_group_name") or record.get("group_id", ""),
+                record.get("chat_id", ""),
+                probability,
+                self._message_mode_label(record),
+                record.get("template_name") or record.get("selected_template_id", ""),
+                self.STATUS_LABELS.get(str(record.get("status") or ""), str(record.get("status") or "未知")),
+                self._flood_wait_label(record),
+                record.get("cooldown_until", ""),
+                record.get("reason_detail") or record.get("error") or record.get("skip_reason", ""),
+                record.get("finished_at", ""),
             ]
             for column, value in enumerate(values):
-                item = QTableWidgetItem(self._short_text(value, 240 if column == 11 else 100))
-                item.setData(Qt.ItemDataRole.UserRole, row)
+                item = QTableWidgetItem(str(value or ""))
+                item.setData(Qt.ItemDataRole.UserRole, str(record.get("attempt_id") or ""))
+                if column in {4, 8, 9}:
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 self.table.setItem(row, column, item)
+        self.table.setSortingEnabled(False)
 
-        self._refresh_cooldown_label()
-        self._show_selected_detail()
+    def _update_summary(self) -> None:
+        counts: dict[str, int] = {}
+        for record in self._records:
+            status = str(record.get("status") or "unknown")
+            counts[status] = counts.get(status, 0) + 1
+        parts = [f"当前显示 {len(self._records)} 条"]
+        for status in (
+            "success", "flood_wait", "blocked", "not_participant",
+            "unavailable", "invalid_target", "entity_unresolved", "telegram_busy",
+            "skipped", "failed",
+        ):
+            if counts.get(status):
+                parts.append(f"{self.STATUS_LABELS[status]} {counts[status]}")
+        self.summary_label.setText("｜".join(parts))
 
     def _refresh_cooldown_label(self) -> None:
-        try:
-            active = self.task_log_service.load_active_flood_waits()
-        except Exception:
-            active = {}
+        loader = getattr(self.task_log_service, "load_active_flood_waits", None)
+        active = dict(loader()) if callable(loader) else {}
         if not active:
-            self.cooldown_label.setText("当前没有账号处于 FloodWait 冷却。")
+            self.cooldown_label.setText("当前没有仍在生效的账号 FloodWait 冷却")
             return
-        items = [f"{name} → {deadline.isoformat(timespec='seconds')}" for name, deadline in sorted(active.items())]
-        self.cooldown_label.setText("账号冷却：" + "；".join(items))
+        text = "；".join(
+            f"{account} 冷却至 {until.isoformat(timespec='seconds')}"
+            for account, until in sorted(active.items())
+        )
+        self.cooldown_label.setText("当前 FloodWait：" + text)
 
     def _show_selected_detail(self) -> None:
-        selected = self.table.selectedItems()
-        if not selected:
+        row = self.table.currentRow()
+        if not (0 <= row < len(self._records)):
             self.detail_text.clear()
             return
-        row_index = selected[0].data(Qt.ItemDataRole.UserRole)
-        try:
-            record = self._records[int(row_index)]
-        except (TypeError, ValueError, IndexError):
-            self.detail_text.clear()
-            return
-        self.detail_text.setPlainText(json.dumps(record, ensure_ascii=False, indent=2))
+        self.detail_text.setPlainText(
+            json.dumps(self._records[row], ensure_ascii=False, indent=2, default=str)
+        )
 
     def _clear_records(self) -> None:
         answer = QMessageBox.question(
             self,
             "清空任务记录",
-            "确定清空任务进度页面中的全部发送记录吗？\n此操作不会删除账号、任务或模板。",
+            "确定清空任务发送记录吗？此操作不会停止正在运行的任务。",
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
-        try:
-            self.task_log_service.clear_records()
-        except Exception as exc:
-            QMessageBox.critical(self, "清空失败", str(exc))
-            return
+        self.task_log_service.clear()
         self._last_signature = None
         self.refresh_records(force=True)
+
+    def _selected_attempt_id(self) -> str:
+        row = self.table.currentRow()
+        if row < 0:
+            return ""
+        item = self.table.item(row, 0)
+        return str(item.data(Qt.ItemDataRole.UserRole) or "") if item else ""
+
+    def _restore_selection(self, attempt_id: str) -> None:
+        if not attempt_id:
+            return
+        for row, record in enumerate(self._records):
+            if str(record.get("attempt_id") or "") == attempt_id:
+                self.table.selectRow(row)
+                return
+
+    @classmethod
+    def _probability_label(cls, record: dict) -> str:
+        decision = cls.DECISION_LABELS.get(
+            str(record.get("decision") or ""),
+            str(record.get("decision") or "未判定"),
+        )
+        roll = record.get("probability_roll", -1)
+        total = record.get("probability_total", 100)
+        try:
+            if float(roll) >= 0:
+                return f"{decision}（抽样 {float(roll):.3f}/{int(total)}）"
+        except (TypeError, ValueError):
+            pass
+        return decision
+
+    @staticmethod
+    def _message_mode_label(record: dict) -> str:
+        mode = str(record.get("message_mode") or "")
+        return {
+            "template": "模板转发",
+            "noise": "噪音文本",
+            "text": "纯文本",
+            "skip": "跳过",
+        }.get(mode, mode or "未知")
+
+    @staticmethod
+    def _flood_wait_label(record: dict) -> str:
+        seconds = int(record.get("flood_wait_seconds") or 0)
+        return f"{seconds} 秒" if seconds > 0 else ""
