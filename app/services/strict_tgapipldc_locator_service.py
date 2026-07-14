@@ -63,19 +63,13 @@ class StrictTgapipldcLocatorService(TgapipldcLocatorService):
         return raw_proxy
 
     def list_profiles(self) -> list[LocatorProfileItem]:
-        items = super().list_profiles()
-        result: list[LocatorProfileItem] = []
-        for item in items:
-            raw_proxy = ""
-            try:
-                raw_proxy = self.proxy_for_profile(item.profile_dir)
-            except Exception:
-                pass
-            result.append(
-                LocatorProfileItem(
-                    profile_dir=item.profile_dir,
-                    display_name=item.display_name,
-                    raw_proxy=raw_proxy,
-                )
+        # Profile 下拉列表只展示本地目录，不在 GUI 主线程执行代理联网检测。
+        # 真正开始校准时 proxy_for_profile 会同步生成并验证静态运行表。
+        return [
+            LocatorProfileItem(
+                profile_dir=item.profile_dir,
+                display_name=item.display_name,
+                raw_proxy="",
             )
-        return result
+            for item in super().list_profiles()
+        ]
