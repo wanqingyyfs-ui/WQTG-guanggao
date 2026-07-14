@@ -4,9 +4,16 @@ import asyncio
 import concurrent.futures
 import threading
 
-from app.core.safe_telegram_client_manager import SafeTelegramClientManager
+from app.core.reliable_telegram_client_manager import (
+    ReliableTelegramClientManager as SafeTelegramClientManager,
+)
+from app.services.reliable_group_send_service import ReliableGroupSendService
+from app.services.reliable_scheduler_service import (
+    ReliableSchedulerService as SchedulerService,
+)
+from app.services.reliable_task_log_service import ReliableTaskLogService
+from app.services.reliable_template_service import ReliableTemplateSender
 from app.services.runtime_service import RuntimeService as BaseRuntimeService
-from app.services.scheduler_service import SchedulerService
 from app.services.tgapipldc_account_bind_service import TgapipldcAccountBindService
 from app.services.tgapipldc_import_service import TgapipldcImportService
 from app.services.tgapipldc_locator_service import TgapipldcLocatorService
@@ -19,10 +26,27 @@ from app.services.yanzheng_login_provider import YanzhengLoginInputProvider
 
 
 class RuntimeService(BaseRuntimeService):
-    """Grouped runtime with explicit safe services and cancellable automation jobs."""
+    """Grouped runtime with strict proxying, detailed task results and safe jobs."""
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+
+        # Replace only the grouped runtime's sending components. Their public
+        # interfaces remain compatible with the original services.
+        self.template_sender = ReliableTemplateSender(
+            templates=self.templates,
+            log_func=self._emit_log,
+        )
+        self.group_send_service = ReliableGroupSendService(
+            template_sender=self.template_sender,
+            noise_pool_service=self.noise_pool_service,
+            log_func=self._emit_log,
+        )
+        self.task_log_service = ReliableTaskLogService(
+            log_file=self.config_service.logs_dir / "task_send.jsonl",
+            log_func=self._emit_log,
+        )
+
         safe_workspace = SafeTgapipldcWorkspaceService(
             self.tgapipldc_workspace_service.workspace_dir
         )
