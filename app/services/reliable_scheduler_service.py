@@ -67,11 +67,24 @@ class ReliableSchedulerService(SchedulerService):
 
             if str(getattr(result, "status", "") or "") == "flood_wait":
                 self._register_flood_wait(account_name, result)
-                await self._wait_for_account_flood_wait(
-                    account_name,
-                    task_stop_event,
-                    window_end,
+                cooldown_until = self._account_flood_wait_until.get(account_name)
+                remaining_seconds = max(
+                    0.0,
+                    (cooldown_until - datetime.now()).total_seconds()
+                    if cooldown_until is not None else 0.0,
                 )
+                configured_delay_seconds = max(0.0, group_delay_ms / 1000.0)
+                wait_seconds = max(remaining_seconds, configured_delay_seconds)
+                self._log(
+                    "info",
+                    f"[{account_name}] FloodWait 后续等待采用较长值 | "
+                    f"flood_wait_remaining={int(remaining_seconds + 0.999)}s | "
+                    f"configured_group_delay={configured_delay_seconds:.3f}s | "
+                    f"actual_wait={wait_seconds:.3f}s",
+                )
+                await self._sleep_seconds(wait_seconds, task_stop_event, window_end)
+                if cooldown_until is not None and datetime.now() >= cooldown_until:
+                    self._account_flood_wait_until.pop(account_name, None)
                 continue
 
             await self._sleep_ms(group_delay_ms, task_stop_event, window_end)
