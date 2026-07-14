@@ -54,10 +54,25 @@ class RuntimeService(BaseRuntimeService):
             return {}
 
     def _update_runtime_components(self) -> None:
-        super()._update_runtime_components()
-        if self._manager is not None and hasattr(self._manager, "update_configuration"):
+        if self._manager is not None:
             self._manager.update_configuration(
+                accounts=self.accounts,
+                settings=self.settings,
                 account_group_proxies=self._load_account_group_proxies_for_runtime(),
+            )
+
+        self.template_sender.update_templates(self.templates)
+        self.template_collector.settings = self.settings
+        self.noise_pool_service.replace_all(self.noise_pool, save=False)
+
+        if self._scheduler is not None:
+            self._scheduler.update_configuration(
+                accounts=self.accounts,
+                groups=self.groups,
+                tasks=self.tasks,
+                templates=self.templates,
+                settings=self.settings,
+                noise_pool_service=self.noise_pool_service,
             )
 
     def _thread_main(self) -> None:
