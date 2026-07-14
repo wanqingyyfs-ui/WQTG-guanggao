@@ -34,23 +34,14 @@ class ReliableTemplateSender(TemplateSender):
             target_chat_id=target_chat_id,
         )
         if source_message_ids is None:
-            return False
+            raise RuntimeError(
+                f"模板配置无效或未启用：template_id={safe_template_id}"
+            )
 
-        target_peer = await self._resolve_target_peer(
-            account_name=account_name,
-            client=client,
-            template=template,
-            target_chat_id=target_chat_id,
-        )
-        if target_peer is None:
-            return False
-        source_peer = await self._resolve_source_peer(
-            account_name=account_name,
-            client=client,
-            template=template,
-        )
-        if source_peer is None:
-            return False
+        # Resolve peers without swallowing Telegram exceptions, so the task result
+        # can distinguish private/inaccessible/invalid peers from generic failures.
+        target_peer = await client.get_input_entity(target_chat_id)
+        source_peer = await client.get_input_entity(template.source_chat_id)
 
         # The grouped runtime intentionally uses Telegram ForwardMessagesRequest.
         # It does not silently switch to clone/text mode after an error.
