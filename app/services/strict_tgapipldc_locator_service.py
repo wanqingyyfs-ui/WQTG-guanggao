@@ -21,6 +21,8 @@ class StrictTgapipldcLocatorService(TgapipldcLocatorService):
         cls._default_proxy_provider = provider
 
     def __init__(self, *args, proxy_provider: ProxyProvider | None = None, **kwargs) -> None:
+        if proxy_provider is not None:
+            type(self)._default_proxy_provider = proxy_provider
         self._strict_proxy_provider = (
             proxy_provider
             or type(self)._default_proxy_provider
