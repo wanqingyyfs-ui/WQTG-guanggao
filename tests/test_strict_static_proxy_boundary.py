@@ -123,7 +123,7 @@ def test_static_profile_map_never_reuses_dynamic_api_proxy(tmp_path: Path) -> No
     assert all(row["status"] == "static_group_proxy_verified" for row in rows)
 
 
-def test_enabled_accounts_cannot_share_proxy_configuration(tmp_path: Path) -> None:
+def test_enabled_accounts_can_share_proxy_configuration(tmp_path: Path) -> None:
     config = ConfigService(tmp_path / "config-root")
     workspace = TgapipldcWorkspaceService(tmp_path / "workspace")
     workspace.ensure_structure()
@@ -135,22 +135,35 @@ def test_enabled_accounts_cannot_share_proxy_configuration(tmp_path: Path) -> No
         _account("account-b", "+10000000002", "group-b"),
     ]
 
-    with pytest.raises(RuntimeError, match="同一个静态代理"):
-        service.validate_enabled_accounts(accounts, proxies)
+    service.validate_enabled_accounts(accounts, proxies)
 
 
-def test_enabled_account_without_group_is_fail_closed(tmp_path: Path) -> None:
+def test_shared_static_proxy_is_checked_once_and_allowed(tmp_path: Path) -> None:
     config = ConfigService(tmp_path / "config-root")
     workspace = TgapipldcWorkspaceService(tmp_path / "workspace")
     workspace.ensure_structure()
     service = StaticAccountProxyService(config, workspace)
-    account = _account("account-a", "+10000000001", "")
+    shared = _proxy("same-static.example", 1080)
+    proxies = {"group-a": shared, "group-b": dict(shared)}
+    accounts = [
+        _account("account-a", "+10000000001", "group-a"),
+        _account("account-b", "+10000000002", "group-b"),
+    ]
 
-    with pytest.raises(RuntimeError, match="未分配账号组"):
-        service.validate_enabled_accounts([account], {})
+    with patch(
+        "app.services.static_account_proxy_service.requests.get",
+        return_value=_Response("203.0.113.99"),
+    ) as request_get:
+        result = service.verify_exit_ips(accounts, proxies)
+
+    assert result == {
+        "account-a": "203.0.113.99",
+        "account-b": "203.0.113.99",
+    }
+    assert request_get.call_count == 1
 
 
-def test_actual_static_exit_ip_must_be_unique(tmp_path: Path) -> None:
+def test_different_static_proxies_may_share_same_exit_ip(tmp_path: Path) -> None:
     config = ConfigService(tmp_path / "config-root")
     workspace = TgapipldcWorkspaceService(tmp_path / "workspace")
     workspace.ensure_structure()
@@ -164,13 +177,27 @@ def test_actual_static_exit_ip_must_be_unique(tmp_path: Path) -> None:
         _account("account-b", "+10000000002", "group-b"),
     ]
 
-    response = _Response("203.0.113.99")
     with patch(
         "app.services.static_account_proxy_service.requests.get",
-        return_value=response,
+        return_value=_Response("203.0.113.99"),
     ):
-        with pytest.raises(RuntimeError, match="实际出口重复"):
-            service.verify_unique_exit_ips(accounts, proxies)
+        result = service.verify_exit_ips(accounts, proxies)
+
+    assert result == {
+        "account-a": "203.0.113.99",
+        "account-b": "203.0.113.99",
+    }
+
+
+def test_enabled_account_without_group_is_fail_closed(tmp_path: Path) -> None:
+    config = ConfigService(tmp_path / "config-root")
+    workspace = TgapipldcWorkspaceService(tmp_path / "workspace")
+    workspace.ensure_structure()
+    service = StaticAccountProxyService(config, workspace)
+    account = _account("account-a", "+10000000001", "")
+
+    with pytest.raises(RuntimeError, match="未分配账号组"):
+        service.validate_enabled_accounts([account], {})
 
 
 def test_strict_calibration_script_has_no_direct_fallback() -> None:
