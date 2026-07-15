@@ -1,5 +1,6 @@
 param(
-    [string]$PythonCommand = ""
+    [string]$PythonCommand = "",
+    [switch]$ValidateOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -101,6 +102,11 @@ if ($LASTEXITCODE -ne 0) {
     throw "读取 Python 版本失败。"
 }
 Write-Host "使用 $($selected.Label)，版本 $pythonVersion" -ForegroundColor Green
+
+if ($ValidateOnly) {
+    Write-Host "安装脚本检测通过。" -ForegroundColor Green
+    exit 0
+}
 
 if (Test-Path ".venv") {
     Write-Host "删除旧的 .venv..."
