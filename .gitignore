@@ -1,74 +1,13 @@
-# Python cache
 __pycache__/
 *.py[cod]
-*.pyo
-*.pyd
 .pytest_cache/
-.mypy_cache/
-.ruff_cache/
-
-# Virtual environments
 .venv/
-venv/
-env/
-ENV/
-
-# Build artifacts
 build/
 dist/
-*.spec.bak
-
-# PyInstaller artifacts
-*.manifest
-*.pkg
-
-# Logs
+*.spec
+runtime/
+*.db
+*.db-shm
+*.db-wal
 *.log
-logs/
-task_send.jsonl
-
-# Runtime data
-sessions/
-config/
-data/
-
-# tgapipldc runtime data inside vendor
-app/vendor/tgapipldc/data/*
-app/vendor/tgapipldc/csv/*
-app/vendor/tgapipldc/logs/*
-app/vendor/tgapipldc/profiles/*
-
-# Keep empty runtime folders if you create .gitkeep files
-!app/vendor/tgapipldc/data/.gitkeep
-!app/vendor/tgapipldc/csv/.gitkeep
-!app/vendor/tgapipldc/logs/.gitkeep
-!app/vendor/tgapipldc/profiles/.gitkeep
-
-# Local app data backup folders
-万青TG群发任务/
-.tg_group_sender/
-
-# IDE
-.vscode/
-.idea/
-
-# OS files
-Thumbs.db
-Desktop.ini
-.DS_Store
-
-# Executables and binary outputs
-*.exe
-*.dll
-*.so
-*.dylib
-
-# Temporary files
-*.tmp
-*.temp
-*.bak
-*.old
-
-# Environment files
-.env
-.env.*
+backups/
