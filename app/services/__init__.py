@@ -1,1 +1,1 @@
-# app.services package
+"""Services package."""

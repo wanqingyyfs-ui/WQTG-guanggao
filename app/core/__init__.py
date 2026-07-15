@@ -1,1 +1,1 @@
-# app.core package
+"""Core package."""

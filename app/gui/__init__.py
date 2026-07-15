@@ -1,1 +1,1 @@
-# app.gui package
+"""Gui package."""
